@@ -15,17 +15,11 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     [Header("Quest Input")]
     public XRNode controllerNode = XRNode.RightHand;
     public bool useTrigger = true;
-    public bool usePrimaryButtonToClose = true;
-    public bool useSecondaryButtonToOpen = true;
-    public bool useThumbstickFineAdjust = true;
-    public float triggerDeadband = 0.04f;
-    public float thumbstickDeadband = 0.20f;
-    public float thumbstickCloseSpeedPerSecond = 1.0f;
 
     [Header("Gripper Motion")]
     [Range(0.0f, 1.0f)] public float targetCloseAmount;
     public float closedAngleDegrees = 51.5662f;
-    public float closeSpeedPerSecond = 3.5f;
+    public float closeSpeedPerSecond = 2.0f;
     public float stiffness = 8000.0f;
     public float damping = 200.0f;
     public float forceLimit = 100.0f;
@@ -38,9 +32,6 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     private ArticulationBody rightFollower;
     private InputDevice controllerDevice;
     private float currentCloseAmount;
-    private bool triggerWasActive;
-    private bool primaryButtonWasPressed;
-    private bool secondaryButtonWasPressed;
 
     public float CloseAmount => currentCloseAmount;
 
@@ -52,10 +43,14 @@ public class Quest3RobotiqGripperController : MonoBehaviour
 
     private void Update()
     {
-        RefreshDeviceIfNeeded();
-        if (controllerDevice.isValid)
+        if (useTrigger)
         {
-            ReadQuestControllerInput();
+            RefreshDeviceIfNeeded();
+            if (controllerDevice.isValid
+                && controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float triggerAmount))
+            {
+                targetCloseAmount = Mathf.Clamp01(triggerAmount);
+            }
         }
 
         if (Input.GetKey(KeyCode.O)) targetCloseAmount = 0.0f;
@@ -66,57 +61,6 @@ public class Quest3RobotiqGripperController : MonoBehaviour
             targetCloseAmount,
             closeSpeedPerSecond * Time.deltaTime);
         ApplyCloseAmount(currentCloseAmount);
-    }
-
-    private void ReadQuestControllerInput()
-    {
-        if (useTrigger
-            && controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float triggerAmount))
-        {
-            bool triggerActive = triggerAmount > triggerDeadband;
-            if (triggerActive || triggerWasActive)
-            {
-                targetCloseAmount = triggerActive
-                    ? Mathf.InverseLerp(triggerDeadband, 1.0f, triggerAmount)
-                    : 0.0f;
-            }
-
-            triggerWasActive = triggerActive;
-        }
-
-        if (usePrimaryButtonToClose
-            && controllerDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryButtonPressed))
-        {
-            if (primaryButtonPressed && !primaryButtonWasPressed)
-            {
-                targetCloseAmount = 1.0f;
-            }
-
-            primaryButtonWasPressed = primaryButtonPressed;
-        }
-
-        if (useSecondaryButtonToOpen
-            && controllerDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryButtonPressed))
-        {
-            if (secondaryButtonPressed && !secondaryButtonWasPressed)
-            {
-                targetCloseAmount = 0.0f;
-            }
-
-            secondaryButtonWasPressed = secondaryButtonPressed;
-        }
-
-        if (useThumbstickFineAdjust
-            && controllerDevice.TryGetFeatureValue(CommonUsages.primary2DAxis, out Vector2 thumbstick))
-        {
-            if (Mathf.Abs(thumbstick.y) > thumbstickDeadband)
-            {
-                float normalizedY = Mathf.Sign(thumbstick.y)
-                    * Mathf.InverseLerp(thumbstickDeadband, 1.0f, Mathf.Abs(thumbstick.y));
-                targetCloseAmount = Mathf.Clamp01(
-                    targetCloseAmount + normalizedY * thumbstickCloseSpeedPerSecond * Time.deltaTime);
-            }
-        }
     }
 
     private void ResolveJoints()

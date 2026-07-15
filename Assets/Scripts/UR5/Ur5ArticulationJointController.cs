@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 public class Ur5ArticulationJointController : MonoBehaviour
@@ -274,9 +275,7 @@ public class Ur5ArticulationJointController : MonoBehaviour
 
             foreach (ArticulationBody body in bodies)
             {
-                string lowerName = body.name.ToLowerInvariant();
-                string lowerHint = hint.ToLowerInvariant();
-                if (lowerName.Contains(lowerHint) || lowerHint.Contains(lowerName))
+                if (MatchesJointHint(body, hint))
                 {
                     match = body;
                     break;
@@ -296,7 +295,8 @@ public class Ur5ArticulationJointController : MonoBehaviour
         {
             foreach (ArticulationBody body in bodies)
             {
-                if (body.jointType == ArticulationJointType.RevoluteJoint)
+                if (body.jointType == ArticulationJointType.RevoluteJoint
+                    && !IsLikelyGripperJoint(body))
                 {
                     joints.Add(body);
                     jointTargets.Add(body.xDrive.target);
@@ -307,6 +307,97 @@ public class Ur5ArticulationJointController : MonoBehaviour
         }
 
         Debug.Log("UR5 joint controller found " + joints.Count + " articulation joints.");
+    }
+
+    private bool MatchesJointHint(ArticulationBody body, string hint)
+    {
+        string lowerHint = hint.ToLowerInvariant();
+        string lowerName = body.name.ToLowerInvariant();
+        if (NameMatchesHint(lowerName, lowerHint))
+        {
+            return true;
+        }
+
+        string jointName = ReadUrdfJointName(body);
+        if (!string.IsNullOrEmpty(jointName)
+            && NameMatchesHint(jointName.ToLowerInvariant(), lowerHint))
+        {
+            return true;
+        }
+
+        string linkAlias = LinkAliasForJoint(lowerHint);
+        return !string.IsNullOrEmpty(linkAlias) && lowerName == linkAlias;
+    }
+
+    private bool NameMatchesHint(string lowerName, string lowerHint)
+    {
+        return lowerName == lowerHint
+            || lowerName.Contains(lowerHint)
+            || lowerHint.Contains(lowerName);
+    }
+
+    private string ReadUrdfJointName(ArticulationBody body)
+    {
+        foreach (MonoBehaviour component in body.GetComponents<MonoBehaviour>())
+        {
+            if (component == null)
+            {
+                continue;
+            }
+
+            FieldInfo field = component.GetType().GetField(
+                "jointName",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field == null)
+            {
+                continue;
+            }
+
+            object value = field.GetValue(component);
+            if (value is string jointName && !string.IsNullOrEmpty(jointName))
+            {
+                return jointName;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private string LinkAliasForJoint(string lowerHint)
+    {
+        switch (lowerHint)
+        {
+            case "shoulder_pan_joint":
+                return "shoulder_link";
+            case "shoulder_lift_joint":
+                return "upper_arm_link";
+            case "elbow_joint":
+                return "forearm_link";
+            case "wrist_1_joint":
+                return "wrist_1_link";
+            case "wrist_2_joint":
+                return "wrist_2_link";
+            case "wrist_3_joint":
+                return "wrist_3_link";
+            default:
+                return string.Empty;
+        }
+    }
+
+    private bool IsLikelyGripperJoint(ArticulationBody body)
+    {
+        string lowerName = body.name.ToLowerInvariant();
+        string jointName = ReadUrdfJointName(body).ToLowerInvariant();
+        return IsLikelyGripperName(lowerName) || IsLikelyGripperName(jointName);
+    }
+
+    private bool IsLikelyGripperName(string lowerName)
+    {
+        return lowerName.Contains("driver")
+            || lowerName.Contains("spring")
+            || lowerName.Contains("follower")
+            || lowerName.Contains("pad")
+            || lowerName.Contains("robotiq");
     }
 
     private void ConfigureJointDrives()
