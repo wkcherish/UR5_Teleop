@@ -26,8 +26,8 @@ public class Ur5ArticulationJointController : MonoBehaviour
 
     [Header("Smooth Drive Targets")]
     public bool smoothDriveTargets = true;
-    public float maxDriveSpeedDegreesPerSecond = 50.0f;
-    public float maxDriveAccelerationDegreesPerSecondSquared = 500.0f;
+    public float maxDriveSpeedDegreesPerSecond = 55.0f;
+    public float maxDriveAccelerationDegreesPerSecondSquared = 550.0f;
 
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;

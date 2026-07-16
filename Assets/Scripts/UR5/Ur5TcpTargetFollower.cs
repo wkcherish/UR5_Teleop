@@ -36,30 +36,35 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Header("IK")]
     public bool followTarget = true;
     public IkSolverMode solverMode = IkSolverMode.DampedLeastSquares;
-    public float positionTolerance = 0.015f;
+    public float positionTolerance = 0.008f;
     [Tooltip("Keep this at 1. Articulation poses update after FixedUpdate, so repeated CCD passes use stale geometry and cause oscillation.")]
     public int solverIterationsPerFixedUpdate = 1;
-    public float angleBlend = 0.34f;
-    public float maxJointStepDegrees = 1.25f;
+    public float angleBlend = 0.48f;
+    public float maxJointStepDegrees = 1.20f;
     public bool adaptivePositionSpeed = true;
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Prevents CCD from queueing large target jumps before the drive has applied the prior correction.")]
-    public float maximumCommandLeadDegrees = 1.2f;
+    public float maximumCommandLeadDegrees = 1.60f;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
     [Header("Damped Least Squares IK")]
     [Tooltip("Higher values trade responsiveness for stability near singular configurations.")]
-    public float dlsDamping = 0.10f;
+    public float dlsDamping = 0.09f;
     [Tooltip("Treats one radian of orientation error as this many meters of task error.")]
-    public float dlsOrientationWeight = 0.34f;
-    public float dlsGain = 0.58f;
+    public float dlsOrientationWeight = 0.72f;
+    public float dlsGain = 0.52f;
+    [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
+    public bool preferWristForOrientation = true;
+    [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
+    [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
+    [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.45f;
 
     [Header("End Effector Orientation")]
     public bool followTargetRotation = true;
     [Range(1, 3)] public int wristJointCount = 3;
-    public float rotationToleranceDegrees = 0.85f;
-    public float rotationBlend = 0.34f;
+    public float rotationToleranceDegrees = 0.55f;
+    public float rotationBlend = 0.38f;
     public float maxWristStepDegrees = 1.20f;
 
     [Header("Quest Idle Hold")]
@@ -85,6 +90,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool loggedMissingReferences;
     private bool wasQuestClutched;
     private bool isQuestIdleHoldActive;
+    private float[] smoothedJointDeltaDegrees = new float[0];
 
     public float PositionError { get; private set; }
     public float RotationErrorDegrees { get; private set; }
@@ -227,6 +233,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             jointController.HoldCurrentJointPose();
         }
 
+        ResetJointDeltaSmoothing();
         PositionError = 0.0f;
         RotationErrorDegrees = 0.0f;
         wasQuestClutched = false;
@@ -320,18 +327,22 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         float rotationWeight = solveRotation ? Mathf.Max(0.0f, dlsOrientationWeight) : 0.0f;
         float[,] jacobian = new float[taskDimensions, jointCount];
         Vector3 controlPoint = GetControlPointPosition();
+        int firstWristIndex = Mathf.Max(0, jointCount - wristJointCount);
 
         for (int i = 0; i < jointCount; i++)
         {
             ArticulationBody joint = jointController.Joints[i];
             Vector3 axis = GetJointAxisWorld(joint, i);
             Vector3 linearVelocity = Vector3.Cross(axis, controlPoint - joint.transform.position);
+            float jointRotationWeight = preferWristForOrientation && i < firstWristIndex
+                ? Mathf.Clamp01(proximalOrientationWeight)
+                : 1.0f;
             jacobian[0, i] = linearVelocity.x * positionWeight;
             jacobian[1, i] = linearVelocity.y * positionWeight;
             jacobian[2, i] = linearVelocity.z * positionWeight;
-            jacobian[3, i] = axis.x * rotationWeight;
-            jacobian[4, i] = axis.y * rotationWeight;
-            jacobian[5, i] = axis.z * rotationWeight;
+            jacobian[3, i] = axis.x * rotationWeight * jointRotationWeight;
+            jacobian[4, i] = axis.y * rotationWeight * jointRotationWeight;
+            jacobian[5, i] = axis.z * rotationWeight * jointRotationWeight;
         }
 
         float[] taskError =
@@ -380,10 +391,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 jointDeltaRadians += jacobian[row, i] * taskVelocity[row];
             }
 
-            float deltaDegrees = Mathf.Clamp(
+            float rawDeltaDegrees = Mathf.Clamp(
                 jointDeltaRadians * Mathf.Rad2Deg * dlsGain,
                 -maxJointStepDegrees,
                 maxJointStepDegrees);
+            float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
             if (Mathf.Abs(deltaDegrees) > 0.0001f)
             {
                 jointController.AddJointTargetDegrees(i, deltaDegrees, clampToDriveLimits);
@@ -505,10 +517,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             : 1.0f;
         float effectiveAngleBlend = Mathf.Lerp(angleBlend * 0.55f, angleBlend, response);
         float effectiveMaxStep = Mathf.Lerp(maxJointStepDegrees * 0.55f, maxJointStepDegrees, response);
-        float deltaDegrees = Mathf.Clamp(
+        float rawDeltaDegrees = Mathf.Clamp(
             signedAngle * effectiveAngleBlend,
             -effectiveMaxStep,
             effectiveMaxStep);
+        float deltaDegrees = SmoothJointDelta(jointIndex, rawDeltaDegrees);
 
         if (Mathf.Abs(deltaDegrees) > 0.0001f)
         {
@@ -555,15 +568,49 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             }
 
             float axisError = Vector3.Dot(errorVectorDegrees, GetJointAxisWorld(joint, i));
-            float deltaDegrees = Mathf.Clamp(
+            float rawDeltaDegrees = Mathf.Clamp(
                 axisError * rotationBlend,
                 -maxWristStepDegrees,
                 maxWristStepDegrees);
+            float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
 
             if (Mathf.Abs(deltaDegrees) > 0.0001f)
             {
                 jointController.AddJointTargetDegrees(i, deltaDegrees, clampToDriveLimits);
             }
+        }
+    }
+
+    private float SmoothJointDelta(int jointIndex, float rawDeltaDegrees)
+    {
+        EnsureJointDeltaSmoothingBuffer(jointIndex + 1);
+        float smoothing = Mathf.Clamp01(jointDeltaSmoothing);
+        float smoothed = Mathf.Lerp(rawDeltaDegrees, smoothedJointDeltaDegrees[jointIndex], smoothing);
+        smoothedJointDeltaDegrees[jointIndex] = smoothed;
+        return smoothed;
+    }
+
+    private void EnsureJointDeltaSmoothingBuffer(int minLength)
+    {
+        if (smoothedJointDeltaDegrees.Length >= minLength)
+        {
+            return;
+        }
+
+        float[] resized = new float[minLength];
+        for (int i = 0; i < smoothedJointDeltaDegrees.Length; i++)
+        {
+            resized[i] = smoothedJointDeltaDegrees[i];
+        }
+
+        smoothedJointDeltaDegrees = resized;
+    }
+
+    private void ResetJointDeltaSmoothing()
+    {
+        for (int i = 0; i < smoothedJointDeltaDegrees.Length; i++)
+        {
+            smoothedJointDeltaDegrees[i] = 0.0f;
         }
     }
 

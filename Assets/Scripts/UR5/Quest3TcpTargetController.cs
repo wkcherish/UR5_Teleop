@@ -1,34 +1,38 @@
 using UnityEngine;
+using UnityEngine.Serialization;
 using UnityEngine.XR;
 
 public class Quest3TcpTargetController : MonoBehaviour
 {
-    [Header("Controller")]
-    public XRNode controllerNode = XRNode.RightHand;
-    public bool useGripAsClutch = true;
-    public bool useTriggerAsClutch = false;
+    [Header("Controllers")]
+    [FormerlySerializedAs("controllerNode")]
+    public XRNode positionControllerNode = XRNode.RightHand;
+    public XRNode rotationControllerNode = XRNode.LeftHand;
+    [FormerlySerializedAs("useGripAsClutch")]
+    public bool usePositionGripAsClutch = true;
+    public bool useRotationGripAsClutch = true;
     public Transform xrOrigin;
     public bool convertControllerPoseThroughXrOrigin = true;
 
     [Header("Mapping")]
     public float translationScale = 0.6f;
-    [Range(0.0f, 2.0f)] public float rotationScale = 1.0f;
+    [Range(0.0f, 3.0f)] public float rotationScale = 1.0f;
     public bool followControllerRotation = true;
-    public float positionSmoothing = 18.0f;
-    public float rotationSmoothing = 18.0f;
+    public float positionSmoothing = 20.0f;
+    public float rotationSmoothing = 26.0f;
     [Tooltip("Caps target motion so the robot can track a fast controller movement smoothly.")]
-    public float maximumTargetSpeed = 0.30f;
-    public float maximumTargetAcceleration = 1.2f;
-    public float maximumTargetAngularSpeed = 240.0f;
+    public float maximumTargetSpeed = 0.18f;
+    public float maximumTargetAcceleration = 0.9f;
+    public float maximumTargetAngularSpeed = 300.0f;
     public float translationDeadbandMeters = 0.0015f;
     public float rotationDeadbandDegrees = 0.35f;
 
     [Header("Input Filtering")]
     public bool filterControllerPose = true;
     public float controllerPositionJitterDeadbandMeters = 0.0010f;
-    public float controllerRotationJitterDeadbandDegrees = 0.35f;
+    public float controllerRotationJitterDeadbandDegrees = 0.15f;
     public float controllerPositionFilterSharpness = 28.0f;
-    public float controllerRotationFilterSharpness = 24.0f;
+    public float controllerRotationFilterSharpness = 32.0f;
     public bool holdTargetWhenClutchReleased = true;
 
     [Header("Workspace Limit")]
@@ -39,146 +43,216 @@ public class Quest3TcpTargetController : MonoBehaviour
     [Header("Debug")]
     public bool logDeviceStatus = true;
 
-    private InputDevice controllerDevice;
-    private bool wasClutched;
-    private bool hasLoggedMissingDevice;
+    private InputDevice positionDevice;
+    private InputDevice rotationDevice;
+    private bool wasPositionClutched;
+    private bool wasRotationClutched;
+    private bool hasLoggedMissingPositionDevice;
+    private bool hasLoggedMissingRotationDevice;
 
-    private Vector3 clutchStartControllerPosition;
-    private Quaternion clutchStartControllerRotation;
-    private Vector3 clutchStartTargetPosition;
-    private Quaternion clutchStartTargetRotation;
+    private Vector3 positionClutchStartControllerPosition;
+    private Vector3 positionClutchStartTargetPosition;
+    private Quaternion rotationClutchStartControllerRotation;
+    private Quaternion rotationClutchStartTargetRotation;
 
     private Vector3 desiredPosition;
     private Quaternion desiredRotation;
     private Vector3 targetVelocity;
-    private Vector3 filteredControllerPosition;
-    private Quaternion filteredControllerRotation;
-    private bool hasFilteredControllerPose;
+    private Vector3 filteredPositionControllerPosition;
+    private Quaternion filteredRotationControllerRotation;
+    private bool hasFilteredPositionPose;
+    private bool hasFilteredRotationPose;
 
-    public bool IsDeviceValid => controllerDevice.isValid;
-    public bool IsClutched { get; private set; }
+    public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
+    public bool IsClutched => IsPositionClutched || IsRotationClutched;
+    public bool IsPositionClutched { get; private set; }
+    public bool IsRotationClutched { get; private set; }
 
     private void Start()
     {
         desiredPosition = transform.position;
         desiredRotation = transform.rotation;
         ResolveXrOrigin();
-        TryRefreshDevice();
+        TryRefreshPositionDevice();
+        TryRefreshRotationDevice();
     }
 
     private void Update()
     {
-        if (!controllerDevice.isValid)
+        if (!positionDevice.isValid)
         {
-            TryRefreshDevice();
-            return;
+            TryRefreshPositionDevice();
         }
 
-        if (!TryReadControllerPose(out Vector3 controllerPosition, out Quaternion controllerRotation))
+        if (!rotationDevice.isValid)
         {
-            return;
+            TryRefreshRotationDevice();
         }
 
-        IsClutched = ReadClutch();
+        bool hasPosition = TryReadControllerPosition(positionDevice, out Vector3 controllerPosition);
+        bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion controllerRotation);
 
-        if (IsClutched && !wasClutched)
+        IsPositionClutched = hasPosition
+            && usePositionGripAsClutch
+            && ReadGripClutch(positionDevice);
+        IsRotationClutched = hasRotation
+            && followControllerRotation
+            && useRotationGripAsClutch
+            && ReadGripClutch(rotationDevice);
+
+        if (IsPositionClutched && !wasPositionClutched)
         {
-            CaptureClutchStart(controllerPosition, controllerRotation);
+            CapturePositionClutchStart(controllerPosition);
+        }
+
+        if (IsRotationClutched && !wasRotationClutched)
+        {
+            CaptureRotationClutchStart(controllerRotation);
+        }
+
+        if (IsPositionClutched)
+        {
+            UpdateDesiredPosition(controllerPosition);
+        }
+        else if (wasPositionClutched && holdTargetWhenClutchReleased)
+        {
+            HoldCurrentTargetPosition();
+        }
+
+        if (IsRotationClutched)
+        {
+            UpdateDesiredRotation(controllerRotation);
+        }
+        else if (wasRotationClutched && holdTargetWhenClutchReleased)
+        {
+            HoldCurrentTargetRotation();
         }
 
         if (IsClutched)
         {
-            UpdateDesiredTarget(controllerPosition, controllerRotation);
             ApplyTarget();
         }
-        else if (wasClutched && holdTargetWhenClutchReleased)
-        {
-            HoldCurrentTargetPose();
-        }
 
-        wasClutched = IsClutched;
+        wasPositionClutched = IsPositionClutched;
+        wasRotationClutched = IsRotationClutched;
     }
 
-    private void TryRefreshDevice()
+    private void TryRefreshPositionDevice()
     {
-        controllerDevice = InputDevices.GetDeviceAtXRNode(controllerNode);
+        positionDevice = InputDevices.GetDeviceAtXRNode(positionControllerNode);
+        LogDeviceStatus(positionDevice, "position", ref hasLoggedMissingPositionDevice);
+    }
 
-        if (controllerDevice.isValid)
+    private void TryRefreshRotationDevice()
+    {
+        rotationDevice = InputDevices.GetDeviceAtXRNode(rotationControllerNode);
+        LogDeviceStatus(rotationDevice, "rotation", ref hasLoggedMissingRotationDevice);
+    }
+
+    private void LogDeviceStatus(InputDevice device, string role, ref bool hasLoggedMissingDevice)
+    {
+        if (device.isValid)
         {
             hasLoggedMissingDevice = false;
             if (logDeviceStatus)
             {
-                Debug.Log("Quest controller connected: " + controllerDevice.name);
+                Debug.Log("Quest " + role + " controller connected: " + device.name);
             }
         }
         else if (logDeviceStatus && !hasLoggedMissingDevice)
         {
             hasLoggedMissingDevice = true;
-            Debug.LogWarning("Quest controller not found yet. Start Play Mode with Quest Link/Air Link or build to Quest.");
+            Debug.LogWarning("Quest " + role + " controller not found yet. Start Play Mode with Quest Link/Air Link or build to Quest.");
         }
     }
 
-    private bool TryReadControllerPose(out Vector3 position, out Quaternion rotation)
+    private bool TryReadControllerPosition(InputDevice device, out Vector3 position)
     {
-        bool hasPosition = controllerDevice.TryGetFeatureValue(CommonUsages.devicePosition, out position);
-        bool hasRotation = controllerDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out rotation);
+        position = Vector3.zero;
+        if (!device.isValid || !device.TryGetFeatureValue(CommonUsages.devicePosition, out position))
+        {
+            return false;
+        }
 
-        if (hasPosition && hasRotation && convertControllerPoseThroughXrOrigin)
+        if (convertControllerPoseThroughXrOrigin)
         {
             ResolveXrOrigin();
             if (xrOrigin != null)
             {
                 position = xrOrigin.TransformPoint(position);
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryReadControllerRotation(InputDevice device, out Quaternion rotation)
+    {
+        rotation = Quaternion.identity;
+        if (!device.isValid || !device.TryGetFeatureValue(CommonUsages.deviceRotation, out rotation))
+        {
+            return false;
+        }
+
+        if (convertControllerPoseThroughXrOrigin)
+        {
+            ResolveXrOrigin();
+            if (xrOrigin != null)
+            {
                 rotation = xrOrigin.rotation * rotation;
             }
         }
 
-        return hasPosition && hasRotation;
+        return true;
     }
 
-    private bool ReadClutch()
+    private bool ReadGripClutch(InputDevice device)
     {
-        bool gripPressed = false;
-        bool triggerPressed = false;
-
-        if (useGripAsClutch)
+        if (!device.isValid)
         {
-            controllerDevice.TryGetFeatureValue(CommonUsages.gripButton, out gripPressed);
+            return false;
         }
 
-        if (useTriggerAsClutch)
+        if (device.TryGetFeatureValue(CommonUsages.gripButton, out bool gripPressed)
+            && gripPressed)
         {
-            controllerDevice.TryGetFeatureValue(CommonUsages.triggerButton, out triggerPressed);
+            return true;
         }
 
-        return gripPressed || triggerPressed;
+        return device.TryGetFeatureValue(CommonUsages.grip, out float gripAmount)
+            && gripAmount >= 0.55f;
     }
 
-    private void CaptureClutchStart(Vector3 controllerPosition, Quaternion controllerRotation)
+    private void CapturePositionClutchStart(Vector3 controllerPosition)
     {
-        clutchStartControllerPosition = controllerPosition;
-        clutchStartControllerRotation = controllerRotation;
-        clutchStartTargetPosition = transform.position;
-        clutchStartTargetRotation = transform.rotation;
+        positionClutchStartControllerPosition = controllerPosition;
+        positionClutchStartTargetPosition = transform.position;
         desiredPosition = transform.position;
-        desiredRotation = transform.rotation;
         targetVelocity = Vector3.zero;
-        filteredControllerPosition = controllerPosition;
-        filteredControllerRotation = controllerRotation;
-        hasFilteredControllerPose = true;
+        filteredPositionControllerPosition = controllerPosition;
+        hasFilteredPositionPose = true;
     }
 
-    private void UpdateDesiredTarget(Vector3 controllerPosition, Quaternion controllerRotation)
+    private void CaptureRotationClutchStart(Quaternion controllerRotation)
     {
-        FilterControllerPose(ref controllerPosition, ref controllerRotation);
+        rotationClutchStartControllerRotation = controllerRotation;
+        rotationClutchStartTargetRotation = transform.rotation;
+        desiredRotation = transform.rotation;
+        filteredRotationControllerRotation = controllerRotation;
+        hasFilteredRotationPose = true;
+    }
 
-        Vector3 controllerDelta = controllerPosition - clutchStartControllerPosition;
+    private void UpdateDesiredPosition(Vector3 controllerPosition)
+    {
+        FilterControllerPosition(ref controllerPosition);
+
+        Vector3 controllerDelta = controllerPosition - positionClutchStartControllerPosition;
         if (controllerDelta.magnitude < translationDeadbandMeters)
         {
             controllerDelta = Vector3.zero;
         }
 
-        desiredPosition = clutchStartTargetPosition + controllerDelta * translationScale;
+        desiredPosition = positionClutchStartTargetPosition + controllerDelta * translationScale;
 
         if (clampWorkspace)
         {
@@ -187,64 +261,87 @@ public class Quest3TcpTargetController : MonoBehaviour
                 Mathf.Clamp(desiredPosition.y, minPosition.y, maxPosition.y),
                 Mathf.Clamp(desiredPosition.z, minPosition.z, maxPosition.z));
         }
-
-        if (followControllerRotation)
-        {
-            Quaternion controllerDeltaRotation = controllerRotation * Quaternion.Inverse(clutchStartControllerRotation);
-            controllerDeltaRotation.ToAngleAxis(out float deltaAngle, out Vector3 deltaAxis);
-            if (deltaAngle > 180.0f)
-            {
-                deltaAngle -= 360.0f;
-            }
-
-            if (Mathf.Abs(deltaAngle) < rotationDeadbandDegrees)
-            {
-                deltaAngle = 0.0f;
-            }
-
-            Quaternion scaledRotation = Quaternion.AngleAxis(deltaAngle * rotationScale, deltaAxis);
-            desiredRotation = scaledRotation * clutchStartTargetRotation;
-        }
     }
 
-    private void FilterControllerPose(ref Vector3 controllerPosition, ref Quaternion controllerRotation)
+    private void UpdateDesiredRotation(Quaternion controllerRotation)
+    {
+        FilterControllerRotation(ref controllerRotation);
+
+        Quaternion controllerDeltaRotation = controllerRotation * Quaternion.Inverse(rotationClutchStartControllerRotation);
+        controllerDeltaRotation.ToAngleAxis(out float deltaAngle, out Vector3 deltaAxis);
+        if (deltaAngle > 180.0f)
+        {
+            deltaAngle -= 360.0f;
+        }
+
+        if (Mathf.Abs(deltaAngle) < rotationDeadbandDegrees)
+        {
+            deltaAngle = 0.0f;
+        }
+
+        Quaternion scaledRotation = Quaternion.AngleAxis(deltaAngle * rotationScale, deltaAxis);
+        desiredRotation = scaledRotation * rotationClutchStartTargetRotation;
+    }
+
+    private void FilterControllerPosition(ref Vector3 controllerPosition)
     {
         if (!filterControllerPose)
         {
             return;
         }
 
-        if (!hasFilteredControllerPose)
+        if (!hasFilteredPositionPose)
         {
-            filteredControllerPosition = controllerPosition;
-            filteredControllerRotation = controllerRotation;
-            hasFilteredControllerPose = true;
+            filteredPositionControllerPosition = controllerPosition;
+            hasFilteredPositionPose = true;
             return;
         }
 
         float deltaTime = Mathf.Max(Time.deltaTime, 0.0001f);
-        if (Vector3.Distance(filteredControllerPosition, controllerPosition) > controllerPositionJitterDeadbandMeters)
+        if (Vector3.Distance(filteredPositionControllerPosition, controllerPosition) > controllerPositionJitterDeadbandMeters)
         {
             float positionT = 1.0f - Mathf.Exp(-Mathf.Max(0.0f, controllerPositionFilterSharpness) * deltaTime);
-            filteredControllerPosition = Vector3.Lerp(filteredControllerPosition, controllerPosition, positionT);
+            filteredPositionControllerPosition = Vector3.Lerp(filteredPositionControllerPosition, controllerPosition, positionT);
         }
 
-        if (Quaternion.Angle(filteredControllerRotation, controllerRotation) > controllerRotationJitterDeadbandDegrees)
-        {
-            float rotationT = 1.0f - Mathf.Exp(-Mathf.Max(0.0f, controllerRotationFilterSharpness) * deltaTime);
-            filteredControllerRotation = Quaternion.Slerp(filteredControllerRotation, controllerRotation, rotationT);
-        }
-
-        controllerPosition = filteredControllerPosition;
-        controllerRotation = filteredControllerRotation;
+        controllerPosition = filteredPositionControllerPosition;
     }
 
-    private void HoldCurrentTargetPose()
+    private void FilterControllerRotation(ref Quaternion controllerRotation)
+    {
+        if (!filterControllerPose)
+        {
+            return;
+        }
+
+        if (!hasFilteredRotationPose)
+        {
+            filteredRotationControllerRotation = controllerRotation;
+            hasFilteredRotationPose = true;
+            return;
+        }
+
+        float deltaTime = Mathf.Max(Time.deltaTime, 0.0001f);
+        if (Quaternion.Angle(filteredRotationControllerRotation, controllerRotation) > controllerRotationJitterDeadbandDegrees)
+        {
+            float rotationT = 1.0f - Mathf.Exp(-Mathf.Max(0.0f, controllerRotationFilterSharpness) * deltaTime);
+            filteredRotationControllerRotation = Quaternion.Slerp(filteredRotationControllerRotation, controllerRotation, rotationT);
+        }
+
+        controllerRotation = filteredRotationControllerRotation;
+    }
+
+    private void HoldCurrentTargetPosition()
     {
         desiredPosition = transform.position;
-        desiredRotation = transform.rotation;
         targetVelocity = Vector3.zero;
-        hasFilteredControllerPose = false;
+        hasFilteredPositionPose = false;
+    }
+
+    private void HoldCurrentTargetRotation()
+    {
+        desiredRotation = transform.rotation;
+        hasFilteredRotationPose = false;
     }
 
     private void ApplyTarget()
