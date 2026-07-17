@@ -2,8 +2,20 @@ using UnityEngine;
 using UnityEngine.Serialization;
 using UnityEngine.XR;
 
+[DefaultExecutionOrder(-100)]
 public class Quest3TcpTargetController : MonoBehaviour
 {
+    private enum ControlChannel
+    {
+        None,
+        Position,
+        Rotation
+    }
+
+    [Header("Timing")]
+    [Tooltip("Apply the smoothed TCP target on the physics tick so IK and target motion stay in the same control loop.")]
+    public bool applyTargetInFixedUpdate = true;
+
     [Header("Controllers")]
     [FormerlySerializedAs("controllerNode")]
     public XRNode positionControllerNode = XRNode.RightHand;
@@ -35,6 +47,24 @@ public class Quest3TcpTargetController : MonoBehaviour
     public float controllerRotationFilterSharpness = 32.0f;
     public bool holdTargetWhenClutchReleased = true;
 
+    [Header("Controller Coordination")]
+    [Tooltip("Only one controller edits the TCP target at a time. This avoids target jumps when both grips are held.")]
+    public bool lockToOneControllerAtATime = true;
+    [Tooltip("Short handoff delay after releasing one grip before the other controller can take over.")]
+    public float clutchSwitchCooldownSeconds = 0.08f;
+    public bool preferPositionWhenBothGripsPressed = true;
+
+    [Header("Fine Control")]
+    [Tooltip("Hold A on the right controller or X on the left controller while gripping for slower target motion.")]
+    public bool enableFineControlButton = true;
+    [Range(0.1f, 1.0f)] public float fineTargetSpeedMultiplier = 0.45f;
+    [Range(0.1f, 1.0f)] public float fineTargetAccelerationMultiplier = 0.55f;
+    [Range(0.1f, 1.0f)] public float fineTargetAngularSpeedMultiplier = 0.45f;
+
+    [Header("Rotation Hold")]
+    [Tooltip("Position-only right-hand control keeps the existing target rotation instead of reapplying stale rotation commands.")]
+    public bool applyRotationOnlyWhileRotationClutched = true;
+
     [Header("Workspace Limit")]
     public bool clampWorkspace = true;
     public Vector3 minPosition = new Vector3(-0.8f, 0.0f, -0.8f);
@@ -45,10 +75,13 @@ public class Quest3TcpTargetController : MonoBehaviour
 
     private InputDevice positionDevice;
     private InputDevice rotationDevice;
+    private TcpTargetWorkspaceLimiter workspaceLimiter;
     private bool wasPositionClutched;
     private bool wasRotationClutched;
     private bool hasLoggedMissingPositionDevice;
     private bool hasLoggedMissingRotationDevice;
+    private ControlChannel activeControlChannel;
+    private float blockNewClutchUntilTime;
 
     private Vector3 positionClutchStartControllerPosition;
     private Vector3 positionClutchStartTargetPosition;
@@ -67,11 +100,13 @@ public class Quest3TcpTargetController : MonoBehaviour
     public bool IsClutched => IsPositionClutched || IsRotationClutched;
     public bool IsPositionClutched { get; private set; }
     public bool IsRotationClutched { get; private set; }
+    public bool IsFineControlActive { get; private set; }
 
     private void Start()
     {
         desiredPosition = transform.position;
         desiredRotation = transform.rotation;
+        workspaceLimiter = GetComponent<TcpTargetWorkspaceLimiter>();
         ResolveXrOrigin();
         TryRefreshPositionDevice();
         TryRefreshRotationDevice();
@@ -92,13 +127,17 @@ public class Quest3TcpTargetController : MonoBehaviour
         bool hasPosition = TryReadControllerPosition(positionDevice, out Vector3 controllerPosition);
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion controllerRotation);
 
-        IsPositionClutched = hasPosition
+        bool wantsPositionClutch = hasPosition
             && usePositionGripAsClutch
             && ReadGripClutch(positionDevice);
-        IsRotationClutched = hasRotation
+        bool wantsRotationClutch = hasRotation
             && followControllerRotation
             && useRotationGripAsClutch
             && ReadGripClutch(rotationDevice);
+        ResolveActiveClutches(wantsPositionClutch, wantsRotationClutch);
+        IsFineControlActive =
+            (IsPositionClutched && ReadFineControl(positionDevice))
+            || (IsRotationClutched && ReadFineControl(rotationDevice));
 
         if (IsPositionClutched && !wasPositionClutched)
         {
@@ -128,13 +167,21 @@ public class Quest3TcpTargetController : MonoBehaviour
             HoldCurrentTargetRotation();
         }
 
-        if (IsClutched)
+        if (IsClutched && !applyTargetInFixedUpdate)
         {
-            ApplyTarget();
+            ApplyTarget(Time.deltaTime);
         }
 
         wasPositionClutched = IsPositionClutched;
         wasRotationClutched = IsRotationClutched;
+    }
+
+    private void FixedUpdate()
+    {
+        if (applyTargetInFixedUpdate && IsClutched)
+        {
+            ApplyTarget(Time.fixedDeltaTime);
+        }
     }
 
     private void TryRefreshPositionDevice()
@@ -223,11 +270,97 @@ public class Quest3TcpTargetController : MonoBehaviour
             && gripAmount >= 0.55f;
     }
 
+    private bool ReadFineControl(InputDevice device)
+    {
+        return enableFineControlButton
+            && device.isValid
+            && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryPressed)
+            && primaryPressed;
+    }
+
+    private void ResolveActiveClutches(bool wantsPositionClutch, bool wantsRotationClutch)
+    {
+        if (!lockToOneControllerAtATime)
+        {
+            IsPositionClutched = wantsPositionClutch;
+            IsRotationClutched = wantsRotationClutch;
+            if (IsPositionClutched)
+            {
+                activeControlChannel = ControlChannel.Position;
+            }
+            else if (IsRotationClutched)
+            {
+                activeControlChannel = ControlChannel.Rotation;
+            }
+            else
+            {
+                activeControlChannel = ControlChannel.None;
+            }
+
+            return;
+        }
+
+        if (activeControlChannel == ControlChannel.Position && wantsPositionClutch)
+        {
+            SetActiveClutchChannel(ControlChannel.Position);
+            return;
+        }
+
+        if (activeControlChannel == ControlChannel.Rotation && wantsRotationClutch)
+        {
+            SetActiveClutchChannel(ControlChannel.Rotation);
+            return;
+        }
+
+        if (activeControlChannel != ControlChannel.None)
+        {
+            SetActiveClutchChannel(ControlChannel.None);
+            blockNewClutchUntilTime = Time.time + Mathf.Max(0.0f, clutchSwitchCooldownSeconds);
+            return;
+        }
+
+        if (Time.time < blockNewClutchUntilTime)
+        {
+            SetActiveClutchChannel(ControlChannel.None);
+            return;
+        }
+
+        if (wantsPositionClutch && wantsRotationClutch)
+        {
+            SetActiveClutchChannel(preferPositionWhenBothGripsPressed
+                ? ControlChannel.Position
+                : ControlChannel.Rotation);
+            return;
+        }
+
+        if (wantsPositionClutch)
+        {
+            SetActiveClutchChannel(ControlChannel.Position);
+            return;
+        }
+
+        if (wantsRotationClutch)
+        {
+            SetActiveClutchChannel(ControlChannel.Rotation);
+            return;
+        }
+
+        SetActiveClutchChannel(ControlChannel.None);
+    }
+
+    private void SetActiveClutchChannel(ControlChannel channel)
+    {
+        activeControlChannel = channel;
+        IsPositionClutched = channel == ControlChannel.Position;
+        IsRotationClutched = channel == ControlChannel.Rotation;
+    }
+
     private void CapturePositionClutchStart(Vector3 controllerPosition)
     {
         positionClutchStartControllerPosition = controllerPosition;
         positionClutchStartTargetPosition = transform.position;
         desiredPosition = transform.position;
+        desiredRotation = transform.rotation;
         targetVelocity = Vector3.zero;
         filteredPositionControllerPosition = controllerPosition;
         hasFilteredPositionPose = true;
@@ -261,6 +394,8 @@ public class Quest3TcpTargetController : MonoBehaviour
                 Mathf.Clamp(desiredPosition.y, minPosition.y, maxPosition.y),
                 Mathf.Clamp(desiredPosition.z, minPosition.z, maxPosition.z));
         }
+
+        desiredPosition = ClampWithWorkspaceLimiter(desiredPosition);
     }
 
     private void UpdateDesiredRotation(Quaternion controllerRotation)
@@ -344,20 +479,28 @@ public class Quest3TcpTargetController : MonoBehaviour
         hasFilteredRotationPose = false;
     }
 
-    private void ApplyTarget()
+    private void ApplyTarget(float deltaTime)
     {
-        float deltaTime = Mathf.Max(Time.deltaTime, 0.0001f);
+        deltaTime = Mathf.Max(deltaTime, 0.0001f);
         Vector3 positionError = desiredPosition - transform.position;
         Vector3 desiredVelocity = positionError * positionSmoothing;
-        if (maximumTargetSpeed > 0.0f)
+        float effectiveMaximumTargetSpeed = maximumTargetSpeed;
+        float effectiveMaximumTargetAcceleration = maximumTargetAcceleration;
+        if (IsFineControlActive)
         {
-            desiredVelocity = Vector3.ClampMagnitude(desiredVelocity, maximumTargetSpeed);
+            effectiveMaximumTargetSpeed *= Mathf.Clamp01(fineTargetSpeedMultiplier);
+            effectiveMaximumTargetAcceleration *= Mathf.Clamp01(fineTargetAccelerationMultiplier);
+        }
+
+        if (effectiveMaximumTargetSpeed > 0.0f)
+        {
+            desiredVelocity = Vector3.ClampMagnitude(desiredVelocity, effectiveMaximumTargetSpeed);
         }
 
         targetVelocity = Vector3.MoveTowards(
             targetVelocity,
             desiredVelocity,
-            Mathf.Max(0.0f, maximumTargetAcceleration) * deltaTime);
+            Mathf.Max(0.0f, effectiveMaximumTargetAcceleration) * deltaTime);
         Vector3 nextPosition = transform.position + targetVelocity * deltaTime;
         if (Vector3.Dot(desiredPosition - transform.position, desiredPosition - nextPosition) <= 0.0f)
         {
@@ -365,20 +508,36 @@ public class Quest3TcpTargetController : MonoBehaviour
             targetVelocity = Vector3.zero;
         }
 
-        transform.position = nextPosition;
+        transform.position = ClampWithWorkspaceLimiter(nextPosition);
 
-        if (followControllerRotation)
+        if (followControllerRotation
+            && (!applyRotationOnlyWhileRotationClutched || IsRotationClutched))
         {
             float exponentialStep = Quaternion.Angle(transform.rotation, desiredRotation)
                 * (1.0f - Mathf.Exp(-rotationSmoothing * deltaTime));
-            float maxStep = maximumTargetAngularSpeed > 0.0f
-                ? maximumTargetAngularSpeed * deltaTime
+            float effectiveMaximumTargetAngularSpeed = IsFineControlActive
+                ? maximumTargetAngularSpeed * Mathf.Clamp01(fineTargetAngularSpeedMultiplier)
+                : maximumTargetAngularSpeed;
+            float maxStep = effectiveMaximumTargetAngularSpeed > 0.0f
+                ? effectiveMaximumTargetAngularSpeed * deltaTime
                 : float.PositiveInfinity;
             transform.rotation = Quaternion.RotateTowards(
                 transform.rotation,
                 desiredRotation,
                 Mathf.Min(exponentialStep, maxStep));
         }
+    }
+
+    private Vector3 ClampWithWorkspaceLimiter(Vector3 worldPosition)
+    {
+        if (workspaceLimiter == null)
+        {
+            workspaceLimiter = GetComponent<TcpTargetWorkspaceLimiter>();
+        }
+
+        return workspaceLimiter != null && workspaceLimiter.constrainTarget
+            ? workspaceLimiter.ClampWorldPosition(worldPosition)
+            : worldPosition;
     }
 
     private void ResolveXrOrigin()

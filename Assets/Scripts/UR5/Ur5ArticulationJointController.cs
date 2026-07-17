@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 
+[DefaultExecutionOrder(25)]
 public class Ur5ArticulationJointController : MonoBehaviour
 {
     [Header("UR5 Root")]
@@ -20,14 +21,14 @@ public class Ur5ArticulationJointController : MonoBehaviour
 
     [Header("Drive")]
     public float stepDegreesPerSecond = 35.0f;
-    public float stiffness = 10000.0f;
-    public float damping = 2500.0f;
-    public float forceLimit = 10000.0f;
+    public float stiffness = 18000.0f;
+    public float damping = 3500.0f;
+    public float forceLimit = 30000.0f;
 
     [Header("Smooth Drive Targets")]
     public bool smoothDriveTargets = true;
-    public float maxDriveSpeedDegreesPerSecond = 55.0f;
-    public float maxDriveAccelerationDegreesPerSecondSquared = 550.0f;
+    public float maxDriveSpeedDegreesPerSecond = 120.0f;
+    public float maxDriveAccelerationDegreesPerSecondSquared = 2400.0f;
 
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;

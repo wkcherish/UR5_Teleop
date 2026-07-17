@@ -1,11 +1,16 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.XR;
 
 public static class Ur5AutoSceneBootstrap
 {
+    private const float FallbackQuestRefreshRate = 72.0f;
+    private static readonly List<XRDisplaySubsystem> DisplaySubsystems = new List<XRDisplaySubsystem>();
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void InstallAfterSceneLoad()
     {
+        ApplyQuestRuntimeTiming();
         InstallStabilizer();
         InstallTargetWorkspaceLimiter();
         InstallTcpTargetFollower();
@@ -18,6 +23,7 @@ public static class Ur5AutoSceneBootstrap
 
     private static void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        ApplyQuestRuntimeTiming();
         InstallStabilizer();
         InstallTargetWorkspaceLimiter();
         InstallTcpTargetFollower();
@@ -169,6 +175,37 @@ public static class Ur5AutoSceneBootstrap
 
         GameObject xrOrigin = GameObject.Find("XR Origin (VR)");
         visualizer.xrOrigin = xrOrigin != null ? xrOrigin.transform : null;
+    }
+
+    private static void ApplyQuestRuntimeTiming()
+    {
+        float refreshRate = ResolveDisplayRefreshRate();
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = Mathf.RoundToInt(refreshRate);
+        Time.fixedDeltaTime = 1.0f / refreshRate;
+        Time.maximumDeltaTime = Mathf.Max(Time.fixedDeltaTime * 4.0f, Time.fixedDeltaTime);
+    }
+
+    private static float ResolveDisplayRefreshRate()
+    {
+        float refreshRate = FallbackQuestRefreshRate;
+        SubsystemManager.GetSubsystems(DisplaySubsystems);
+        foreach (XRDisplaySubsystem displaySubsystem in DisplaySubsystems)
+        {
+            if (displaySubsystem == null || !displaySubsystem.running)
+            {
+                continue;
+            }
+
+            if (displaySubsystem.TryGetDisplayRefreshRate(out float displayRefreshRate)
+                && displayRefreshRate > 1.0f)
+            {
+                refreshRate = displayRefreshRate;
+                break;
+            }
+        }
+
+        return Mathf.Clamp(refreshRate, 60.0f, 120.0f);
     }
 
     private static Transform FindRobotRoot()

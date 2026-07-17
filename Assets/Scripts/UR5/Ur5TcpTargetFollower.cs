@@ -1,5 +1,6 @@
 using UnityEngine;
 
+[DefaultExecutionOrder(-50)]
 public class Ur5TcpTargetFollower : MonoBehaviour
 {
     public enum IkSolverMode
@@ -36,36 +37,38 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Header("IK")]
     public bool followTarget = true;
     public IkSolverMode solverMode = IkSolverMode.DampedLeastSquares;
-    public float positionTolerance = 0.008f;
+    public float positionTolerance = 0.004f;
     [Tooltip("Keep this at 1. Articulation poses update after FixedUpdate, so repeated CCD passes use stale geometry and cause oscillation.")]
     public int solverIterationsPerFixedUpdate = 1;
     public float angleBlend = 0.48f;
-    public float maxJointStepDegrees = 1.20f;
+    public float maxJointStepDegrees = 0.85f;
     public bool adaptivePositionSpeed = true;
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Prevents CCD from queueing large target jumps before the drive has applied the prior correction.")]
-    public float maximumCommandLeadDegrees = 1.60f;
+    public float maximumCommandLeadDegrees = 3.00f;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
     [Header("Damped Least Squares IK")]
     [Tooltip("Higher values trade responsiveness for stability near singular configurations.")]
-    public float dlsDamping = 0.09f;
+    public float dlsDamping = 0.14f;
     [Tooltip("Treats one radian of orientation error as this many meters of task error.")]
     public float dlsOrientationWeight = 0.72f;
-    public float dlsGain = 0.52f;
+    public float dlsGain = 0.42f;
     [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
     public bool preferWristForOrientation = true;
     [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
-    [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.45f;
+    [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.55f;
 
     [Header("End Effector Orientation")]
     public bool followTargetRotation = true;
     [Range(1, 3)] public int wristJointCount = 3;
     public float rotationToleranceDegrees = 0.55f;
     public float rotationBlend = 0.38f;
-    public float maxWristStepDegrees = 1.20f;
+    public float maxWristStepDegrees = 0.85f;
+    [Tooltip("When only the right controller is translating, stop orientation-only corrections after the TCP position is close enough.")]
+    public bool suppressRotationOnlyIkDuringPositionControl = true;
 
     [Header("Quest Idle Hold")]
     public Quest3TcpTargetController questController;
@@ -312,11 +315,14 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void ApplyDampedLeastSquaresStep(int jointCount, Vector3 positionError)
     {
-        Vector3 rotationErrorRadians = GetRotationErrorRadians();
+        bool allowRotationSolve = ShouldSolveTargetRotation();
+        Vector3 rotationErrorRadians = allowRotationSolve
+            ? GetRotationErrorRadians()
+            : Vector3.zero;
         RotationErrorDegrees = rotationErrorRadians.magnitude * Mathf.Rad2Deg;
 
         bool solvePosition = PositionError > positionTolerance;
-        bool solveRotation = followTargetRotation && RotationErrorDegrees > rotationToleranceDegrees;
+        bool solveRotation = allowRotationSolve && RotationErrorDegrees > rotationToleranceDegrees;
         if (!solvePosition && !solveRotation)
         {
             return;
@@ -420,6 +426,24 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         return errorAxis.sqrMagnitude > 0.000001f
             ? errorAxis.normalized * errorAngle * Mathf.Deg2Rad
             : Vector3.zero;
+    }
+
+    private bool ShouldSolveTargetRotation()
+    {
+        if (!followTargetRotation || endEffector == null || tcpTarget == null)
+        {
+            return false;
+        }
+
+        if (!suppressRotationOnlyIkDuringPositionControl
+            || questController == null
+            || !questController.IsPositionClutched
+            || questController.IsRotationClutched)
+        {
+            return true;
+        }
+
+        return PositionError > positionTolerance;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)
@@ -538,7 +562,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void StepOrientationTowardTarget(int jointCount)
     {
-        if (!followTargetRotation || endEffector == null || tcpTarget == null)
+        if (!ShouldSolveTargetRotation())
         {
             return;
         }
