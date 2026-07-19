@@ -25,14 +25,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     [Header("Velocity Mapping")]
     [Tooltip("Meters/second generated per meter of right-hand displacement from the clutch origin.")]
-    public float linearSpeedGain = 0.75f;
-    public float maxLinearSpeed = 0.08f;
-    public float linearDeadbandMeters = 0.012f;
+    public float linearSpeedGain = 1.20f;
+    public float maxLinearSpeed = 0.14f;
+    public float linearDeadbandMeters = 0.005f;
 
     [Tooltip("Radians/second generated per radian of left-hand rotation from the clutch orientation.")]
-    public float angularSpeedGain = 0.95f;
-    public float maxAngularSpeedRadiansPerSecond = 0.55f;
-    public float angularDeadbandDegrees = 2.5f;
+    public float angularSpeedGain = 1.30f;
+    public float maxAngularSpeedRadiansPerSecond = 0.85f;
+    public float angularDeadbandDegrees = 1.2f;
 
     [Header("Axis Locks")]
     public bool allowBaseX = true;
@@ -43,9 +43,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool allowAngularZ = true;
 
     [Header("Filtering And Limits")]
-    public float commandSmoothingSharpness = 14.0f;
-    public float maxLinearAcceleration = 0.20f;
-    public float maxAngularAcceleration = 1.20f;
+    public float commandSmoothingSharpness = 22.0f;
+    public float maxLinearAcceleration = 0.40f;
+    public float maxAngularAcceleration = 2.20f;
     public bool snapToZeroOnRelease = true;
 
     [Header("Workspace Guard")]
@@ -59,12 +59,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Tooltip("Allows Unity preview to be tuned before connecting the real robot.")]
     public bool enableUnityPreview = true;
     public bool clampPreviewWithWorkspaceLimiter = true;
-    public float relativePreviewPositionScale = 0.75f;
-    public float relativePreviewRotationScale = 0.90f;
-    public float previewPositionSmoothingSharpness = 12.0f;
-    public float previewRotationSmoothingSharpness = 14.0f;
-    public float previewMaxLinearSpeed = 0.14f;
-    public float previewMaxAngularSpeedDegreesPerSecond = 150.0f;
+    public float relativePreviewPositionScale = 2.40f;
+    public float relativePreviewRotationScale = 1.80f;
+    public float previewPositionSmoothingSharpness = 26.0f;
+    public float previewRotationSmoothingSharpness = 28.0f;
+    public float previewMaxLinearSpeed = 0.35f;
+    public float previewMaxAngularSpeedDegreesPerSecond = 300.0f;
 
     [Header("Grip Hysteresis")]
     [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
@@ -72,8 +72,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     [Header("Fine Control")]
     public bool enableFineControlButton = true;
-    [Range(0.1f, 1.0f)] public float fineLinearSpeedMultiplier = 0.35f;
-    [Range(0.1f, 1.0f)] public float fineAngularSpeedMultiplier = 0.35f;
+    public bool applyFineControlToRelativePreview = true;
+    [Range(0.1f, 1.0f)] public float fineLinearSpeedMultiplier = 0.25f;
+    [Range(0.1f, 1.0f)] public float fineAngularSpeedMultiplier = 0.25f;
 
     [Header("Output")]
     public bool sendToSpeedlClient = true;
@@ -423,7 +424,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             Vector3 controllerDelta = latestPositionWorld - positionNeutralWorldPosition;
             Vector3 deadbandedDelta = ApplyVectorDeadband(controllerDelta, linearDeadbandMeters);
             desiredPosition = positionClutchStartTargetWorldPosition
-                + deadbandedDelta * Mathf.Max(0.0f, relativePreviewPositionScale);
+                + deadbandedDelta * GetRelativePreviewPositionScale();
 
             if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
             {
@@ -471,8 +472,24 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         float scaledAngle = Mathf.Sign(angleDegrees)
             * Mathf.Max(0.0f, Mathf.Abs(angleDegrees) - angularDeadbandDegrees)
-            * Mathf.Max(0.0f, relativePreviewRotationScale);
+            * GetRelativePreviewRotationScale();
         return Quaternion.AngleAxis(scaledAngle, axis.normalized) * rotationClutchStartTargetWorldRotation;
+    }
+
+    private float GetRelativePreviewPositionScale()
+    {
+        float scale = Mathf.Max(0.0f, relativePreviewPositionScale);
+        return applyFineControlToRelativePreview && IsFineControlActive
+            ? scale * Mathf.Clamp01(fineLinearSpeedMultiplier)
+            : scale;
+    }
+
+    private float GetRelativePreviewRotationScale()
+    {
+        float scale = Mathf.Max(0.0f, relativePreviewRotationScale);
+        return applyFineControlToRelativePreview && IsFineControlActive
+            ? scale * Mathf.Clamp01(fineAngularSpeedMultiplier)
+            : scale;
     }
 
     private Vector3 ApplyAxisLocks(Vector3 value, bool allowX, bool allowY, bool allowZ)
@@ -662,6 +679,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewRotationSmoothingSharpness = Mathf.Max(0.0f, previewRotationSmoothingSharpness);
         previewMaxLinearSpeed = Mathf.Max(0.0f, previewMaxLinearSpeed);
         previewMaxAngularSpeedDegreesPerSecond = Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond);
+        fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
+        fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);
         gripPressThreshold = Mathf.Clamp01(gripPressThreshold);
         gripReleaseThreshold = Mathf.Clamp(gripReleaseThreshold, 0.0f, gripPressThreshold);
     }

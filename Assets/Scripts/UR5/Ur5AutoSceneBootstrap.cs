@@ -174,8 +174,8 @@ public static class Ur5AutoSceneBootstrap
         jointController.damping = 5200.0f;
         jointController.forceLimit = 30000.0f;
         jointController.smoothDriveTargets = true;
-        jointController.maxDriveSpeedDegreesPerSecond = 90.0f;
-        jointController.maxDriveAccelerationDegreesPerSecondSquared = 1800.0f;
+        jointController.maxDriveSpeedDegreesPerSecond = 180.0f;
+        jointController.maxDriveAccelerationDegreesPerSecondSquared = 5000.0f;
         jointController.driveTargetToleranceDegrees = 0.005f;
         jointController.ApplyConfiguredDriveSettings();
     }
@@ -184,18 +184,18 @@ public static class Ur5AutoSceneBootstrap
     {
         follower.useGripperPadCenter = false;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 0.55f;
-        follower.minimumJointDeltaDegrees = 0.030f;
-        follower.maximumCommandLeadDegrees = 2.20f;
+        follower.maxJointStepDegrees = 1.20f;
+        follower.minimumJointDeltaDegrees = 0.015f;
+        follower.maximumCommandLeadDegrees = 5.00f;
         follower.useTimedJointAssignments = true;
-        follower.jointAssignmentIntervalSeconds = 0.03f;
-        follower.dlsDamping = 0.45f;
+        follower.jointAssignmentIntervalSeconds = 0.016f;
+        follower.dlsDamping = 0.35f;
         follower.dlsOrientationWeight = 0.35f;
-        follower.dlsGain = 0.22f;
-        follower.jointDeltaSmoothing = 0.74f;
+        follower.dlsGain = 0.40f;
+        follower.jointDeltaSmoothing = 0.55f;
         follower.rotationToleranceDegrees = 2.00f;
-        follower.rotationBlend = 0.24f;
-        follower.maxWristStepDegrees = 0.45f;
+        follower.rotationBlend = 0.40f;
+        follower.maxWristStepDegrees = 0.90f;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
         follower.targetStationaryPositionEpsilon = 0.0015f;
@@ -208,7 +208,7 @@ public static class Ur5AutoSceneBootstrap
     {
         trajectoryPlayer.play = true;
         trajectoryPlayer.queueMode = Ur5JointTrajectoryPlayer.QueueMode.LatestOnly;
-        trajectoryPlayer.jointAssignmentIntervalSeconds = 0.03f;
+        trajectoryPlayer.jointAssignmentIntervalSeconds = 0.016f;
         trajectoryPlayer.applyDirectlyToDrive = true;
         trajectoryPlayer.clampToDriveLimits = true;
         trajectoryPlayer.maxQueuedWaypoints = 1;
@@ -217,18 +217,23 @@ public static class Ur5AutoSceneBootstrap
     private static void ApplyStableVelocityTeleopDefaults(Ur5CartesianVelocityTeleopController velocityTeleop)
     {
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        velocityTeleop.relativePreviewPositionScale = 0.75f;
-        velocityTeleop.relativePreviewRotationScale = 0.90f;
-        velocityTeleop.previewMaxLinearSpeed = 0.14f;
-        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 150.0f;
-        velocityTeleop.previewPositionSmoothingSharpness = 16.0f;
-        velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
-        velocityTeleop.linearSpeedGain = 0.55f;
-        velocityTeleop.maxLinearSpeed = 0.06f;
-        velocityTeleop.maxLinearAcceleration = 0.16f;
-        velocityTeleop.angularSpeedGain = 0.75f;
-        velocityTeleop.maxAngularSpeedRadiansPerSecond = 0.45f;
-        velocityTeleop.maxAngularAcceleration = 0.90f;
+        velocityTeleop.linearDeadbandMeters = 0.005f;
+        velocityTeleop.angularDeadbandDegrees = 1.2f;
+        velocityTeleop.relativePreviewPositionScale = 2.40f;
+        velocityTeleop.relativePreviewRotationScale = 1.80f;
+        velocityTeleop.previewMaxLinearSpeed = 0.35f;
+        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 300.0f;
+        velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
+        velocityTeleop.previewRotationSmoothingSharpness = 28.0f;
+        velocityTeleop.applyFineControlToRelativePreview = true;
+        velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
+        velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
+        velocityTeleop.linearSpeedGain = 1.20f;
+        velocityTeleop.maxLinearSpeed = 0.14f;
+        velocityTeleop.maxLinearAcceleration = 0.40f;
+        velocityTeleop.angularSpeedGain = 1.30f;
+        velocityTeleop.maxAngularSpeedRadiansPerSecond = 0.85f;
+        velocityTeleop.maxAngularAcceleration = 2.20f;
     }
 
     private static void InstallGripperController()

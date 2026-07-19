@@ -24,7 +24,7 @@ Quest 3 手柄
 
 - 右手 grip：平移 TCP 目标。
 - 左手 grip：旋转 TCP 目标。
-- primary button：细控制模式，降低线速度和角速度。
+- primary button：细控制模式，降低线速度、角速度和相对位姿映射比例，用于靠近物体或采集精细动作。
 - trigger/grip 夹爪控制：仍由原夹爪脚本处理，和机械臂 TCP 控制分离。
 - 松开 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
 
@@ -42,12 +42,13 @@ Quest 3 手柄
 先只在 Unity/Quest 里调稳定性，不连接真机：
 
 1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
-2. 当前默认是中速档：`previewMaxLinearSpeed = 0.14`、`maxJointStepDegrees = 0.55`、`jointAssignmentIntervalSeconds = 0.03`。
-3. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees`，例如从 `0.55` 降到 `0.40`。
-4. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.03` 到 `0.025`。
-5. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.14` 到 `0.18`。
-6. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
-7. 如果手柄移动和 TCP 位移比例太大，降低 `relativePreviewPositionScale` 和 `relativePreviewRotationScale`。
+2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.20`、`jointAssignmentIntervalSeconds = 0.016`。
+3. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees`，例如从 `1.20` 降到 `0.80`。
+4. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
+5. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
+6. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
+7. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
+8. 如果普通模式太灵敏，按住 primary button 进入细控；如果仍太灵敏，降低 `relativePreviewPositionScale` 和 `relativePreviewRotationScale`。
 
 ## 真机扩展策略
 

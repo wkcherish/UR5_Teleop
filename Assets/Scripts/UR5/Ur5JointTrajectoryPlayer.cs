@@ -16,7 +16,7 @@ public class Ur5JointTrajectoryPlayer : MonoBehaviour
     [Header("Trajectory Playback")]
     public bool play = true;
     public QueueMode queueMode = QueueMode.LatestOnly;
-    public float jointAssignmentIntervalSeconds = 0.03f;
+    public float jointAssignmentIntervalSeconds = 0.016f;
     public bool applyDirectlyToDrive = true;
     public bool clampToDriveLimits = true;
     public int maxQueuedWaypoints = 1;
