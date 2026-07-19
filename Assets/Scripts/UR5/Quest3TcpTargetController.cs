@@ -27,29 +27,33 @@ public class Quest3TcpTargetController : MonoBehaviour
     public bool convertControllerPoseThroughXrOrigin = true;
 
     [Header("Mapping")]
-    public float translationScale = 0.6f;
-    [Range(0.0f, 3.0f)] public float rotationScale = 1.0f;
+    public float translationScale = 0.35f;
+    [Range(0.0f, 3.0f)] public float rotationScale = 0.75f;
     public bool followControllerRotation = true;
-    public float positionSmoothing = 20.0f;
-    public float rotationSmoothing = 26.0f;
+    public float positionSmoothing = 14.0f;
+    public float rotationSmoothing = 18.0f;
     [Tooltip("Caps target motion so the robot can track a fast controller movement smoothly.")]
-    public float maximumTargetSpeed = 0.18f;
-    public float maximumTargetAcceleration = 0.9f;
-    public float maximumTargetAngularSpeed = 300.0f;
-    public float translationDeadbandMeters = 0.0015f;
-    public float rotationDeadbandDegrees = 0.35f;
+    public float maximumTargetSpeed = 0.10f;
+    public float maximumTargetAcceleration = 0.45f;
+    public float maximumTargetAngularSpeed = 120.0f;
+    public float translationDeadbandMeters = 0.0020f;
+    public float rotationDeadbandDegrees = 0.50f;
 
     [Header("Input Filtering")]
     public bool filterControllerPose = true;
-    public float controllerPositionJitterDeadbandMeters = 0.0010f;
-    public float controllerRotationJitterDeadbandDegrees = 0.15f;
-    public float controllerPositionFilterSharpness = 28.0f;
-    public float controllerRotationFilterSharpness = 32.0f;
+    public float controllerPositionJitterDeadbandMeters = 0.0015f;
+    public float controllerRotationJitterDeadbandDegrees = 0.25f;
+    public float controllerPositionFilterSharpness = 18.0f;
+    public float controllerRotationFilterSharpness = 20.0f;
+    [Tooltip("Analog grip value required to enter clutch. Higher values avoid accidental activation.")]
+    [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
+    [Tooltip("Analog grip value below which clutch releases. Lower than press threshold to prevent chatter.")]
+    [Range(0.0f, 1.0f)] public float gripReleaseThreshold = 0.40f;
     public bool holdTargetWhenClutchReleased = true;
 
     [Header("Controller Coordination")]
     [Tooltip("Only one controller edits the TCP target at a time. This avoids target jumps when both grips are held.")]
-    public bool lockToOneControllerAtATime = true;
+    public bool lockToOneControllerAtATime = false;
     [Tooltip("Short handoff delay after releasing one grip before the other controller can take over.")]
     public float clutchSwitchCooldownSeconds = 0.08f;
     public bool preferPositionWhenBothGripsPressed = true;
@@ -57,9 +61,9 @@ public class Quest3TcpTargetController : MonoBehaviour
     [Header("Fine Control")]
     [Tooltip("Hold A on the right controller or X on the left controller while gripping for slower target motion.")]
     public bool enableFineControlButton = true;
-    [Range(0.1f, 1.0f)] public float fineTargetSpeedMultiplier = 0.45f;
-    [Range(0.1f, 1.0f)] public float fineTargetAccelerationMultiplier = 0.55f;
-    [Range(0.1f, 1.0f)] public float fineTargetAngularSpeedMultiplier = 0.45f;
+    [Range(0.1f, 1.0f)] public float fineTargetSpeedMultiplier = 0.35f;
+    [Range(0.1f, 1.0f)] public float fineTargetAccelerationMultiplier = 0.45f;
+    [Range(0.1f, 1.0f)] public float fineTargetAngularSpeedMultiplier = 0.35f;
 
     [Header("Rotation Hold")]
     [Tooltip("Position-only right-hand control keeps the existing target rotation instead of reapplying stale rotation commands.")]
@@ -80,6 +84,8 @@ public class Quest3TcpTargetController : MonoBehaviour
     private bool wasRotationClutched;
     private bool hasLoggedMissingPositionDevice;
     private bool hasLoggedMissingRotationDevice;
+    private bool positionGripLatched;
+    private bool rotationGripLatched;
     private ControlChannel activeControlChannel;
     private float blockNewClutchUntilTime;
 
@@ -128,12 +134,10 @@ public class Quest3TcpTargetController : MonoBehaviour
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion controllerRotation);
 
         bool wantsPositionClutch = hasPosition
-            && usePositionGripAsClutch
-            && ReadGripClutch(positionDevice);
+            && (!usePositionGripAsClutch || ReadGripClutch(positionDevice, ref positionGripLatched));
         bool wantsRotationClutch = hasRotation
             && followControllerRotation
-            && useRotationGripAsClutch
-            && ReadGripClutch(rotationDevice);
+            && (!useRotationGripAsClutch || ReadGripClutch(rotationDevice, ref rotationGripLatched));
         ResolveActiveClutches(wantsPositionClutch, wantsRotationClutch);
         IsFineControlActive =
             (IsPositionClutched && ReadFineControl(positionDevice))
@@ -253,21 +257,35 @@ public class Quest3TcpTargetController : MonoBehaviour
         return true;
     }
 
-    private bool ReadGripClutch(InputDevice device)
+    private bool ReadGripClutch(InputDevice device, ref bool gripLatched)
     {
         if (!device.isValid)
         {
+            gripLatched = false;
             return false;
         }
 
-        if (device.TryGetFeatureValue(CommonUsages.gripButton, out bool gripPressed)
-            && gripPressed)
+        bool hasAnalogGrip = device.TryGetFeatureValue(CommonUsages.grip, out float gripAmount);
+        bool hasGripButton = device.TryGetFeatureValue(CommonUsages.gripButton, out bool gripPressed);
+
+        if (hasAnalogGrip)
         {
-            return true;
+            float pressThreshold = Mathf.Clamp01(gripPressThreshold);
+            float releaseThreshold = Mathf.Min(pressThreshold, Mathf.Clamp01(gripReleaseThreshold));
+            gripLatched = gripLatched
+                ? gripAmount > releaseThreshold || (hasGripButton && gripPressed)
+                : gripAmount >= pressThreshold || (hasGripButton && gripPressed);
+            return gripLatched;
         }
 
-        return device.TryGetFeatureValue(CommonUsages.grip, out float gripAmount)
-            && gripAmount >= 0.55f;
+        if (hasGripButton)
+        {
+            gripLatched = gripPressed;
+            return gripLatched;
+        }
+
+        gripLatched = false;
+        return false;
     }
 
     private bool ReadFineControl(InputDevice device)
@@ -538,6 +556,15 @@ public class Quest3TcpTargetController : MonoBehaviour
         return workspaceLimiter != null && workspaceLimiter.constrainTarget
             ? workspaceLimiter.ClampWorldPosition(worldPosition)
             : worldPosition;
+    }
+
+    private void OnValidate()
+    {
+        gripPressThreshold = Mathf.Clamp01(gripPressThreshold);
+        gripReleaseThreshold = Mathf.Clamp(gripReleaseThreshold, 0.0f, gripPressThreshold);
+        maximumTargetSpeed = Mathf.Max(0.0f, maximumTargetSpeed);
+        maximumTargetAcceleration = Mathf.Max(0.0f, maximumTargetAcceleration);
+        maximumTargetAngularSpeed = Mathf.Max(0.0f, maximumTargetAngularSpeed);
     }
 
     private void ResolveXrOrigin()

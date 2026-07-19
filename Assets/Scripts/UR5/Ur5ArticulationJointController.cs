@@ -21,14 +21,15 @@ public class Ur5ArticulationJointController : MonoBehaviour
 
     [Header("Drive")]
     public float stepDegreesPerSecond = 35.0f;
-    public float stiffness = 18000.0f;
-    public float damping = 3500.0f;
+    public float stiffness = 12000.0f;
+    public float damping = 5200.0f;
     public float forceLimit = 30000.0f;
 
     [Header("Smooth Drive Targets")]
     public bool smoothDriveTargets = true;
-    public float maxDriveSpeedDegreesPerSecond = 120.0f;
-    public float maxDriveAccelerationDegreesPerSecondSquared = 2400.0f;
+    public float maxDriveSpeedDegreesPerSecond = 90.0f;
+    public float maxDriveAccelerationDegreesPerSecondSquared = 1800.0f;
+    public float driveTargetToleranceDegrees = 0.005f;
 
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;
@@ -55,6 +56,17 @@ public class Ur5ArticulationJointController : MonoBehaviour
         ConfigureDigitalTwinPhysics();
         FindJoints();
         ConfigureJointDrives();
+    }
+
+    private void OnValidate()
+    {
+        stepDegreesPerSecond = Mathf.Max(0.0f, stepDegreesPerSecond);
+        stiffness = Mathf.Max(0.0f, stiffness);
+        damping = Mathf.Max(0.0f, damping);
+        forceLimit = Mathf.Max(0.0f, forceLimit);
+        maxDriveSpeedDegreesPerSecond = Mathf.Max(0.0f, maxDriveSpeedDegreesPerSecond);
+        maxDriveAccelerationDegreesPerSecondSquared = Mathf.Max(0.0f, maxDriveAccelerationDegreesPerSecondSquared);
+        driveTargetToleranceDegrees = Mathf.Max(0.0f, driveTargetToleranceDegrees);
     }
 
     private void Update()
@@ -110,6 +122,17 @@ public class Ur5ArticulationJointController : MonoBehaviour
         return appliedJointTargets[index];
     }
 
+    public float[] GetJointTargetSnapshotDegrees()
+    {
+        float[] snapshot = new float[jointTargets.Count];
+        for (int i = 0; i < jointTargets.Count; i++)
+        {
+            snapshot[i] = jointTargets[i];
+        }
+
+        return snapshot;
+    }
+
     private void FixedUpdate()
     {
         if (!smoothDriveTargets)
@@ -121,6 +144,14 @@ public class Ur5ArticulationJointController : MonoBehaviour
         for (int i = 0; i < joints.Count; i++)
         {
             float remaining = jointTargets[i] - appliedJointTargets[i];
+            if (Mathf.Abs(remaining) <= driveTargetToleranceDegrees)
+            {
+                appliedJointTargets[i] = jointTargets[i];
+                appliedJointVelocities[i] = 0.0f;
+                ApplyDriveTarget(i, jointTargets[i]);
+                continue;
+            }
+
             float desiredVelocity = Mathf.Clamp(
                 remaining / deltaTime,
                 -maxDriveSpeedDegreesPerSecond,
@@ -160,6 +191,41 @@ public class Ur5ArticulationJointController : MonoBehaviour
         {
             appliedJointTargets[index] = jointTargets[index];
             ApplyDriveTarget(index, jointTargets[index]);
+        }
+    }
+
+    public void SetJointTargetsDegrees(IReadOnlyList<float> targetDegrees, bool clampToDriveLimits)
+    {
+        SetJointTargetsDegrees(targetDegrees, targetDegrees != null ? targetDegrees.Count : 0, clampToDriveLimits, false);
+    }
+
+    public void SetJointTargetsDegrees(
+        IReadOnlyList<float> targetDegrees,
+        int targetCount,
+        bool clampToDriveLimits,
+        bool applyDirectlyToDrive)
+    {
+        if (targetDegrees == null)
+        {
+            return;
+        }
+
+        int count = Mathf.Min(Mathf.Min(targetCount, targetDegrees.Count), jointTargets.Count);
+        for (int i = 0; i < count; i++)
+        {
+            jointTargets[i] = clampToDriveLimits ? ClampToDriveLimits(i, targetDegrees[i]) : targetDegrees[i];
+        }
+
+        if (!applyDirectlyToDrive && smoothDriveTargets)
+        {
+            return;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            appliedJointTargets[i] = jointTargets[i];
+            appliedJointVelocities[i] = 0.0f;
+            ApplyDriveTarget(i, jointTargets[i]);
         }
     }
 
@@ -412,6 +478,11 @@ public class Ur5ArticulationJointController : MonoBehaviour
             drive.target = smoothDriveTargets ? appliedJointTargets[i] : jointTargets[i];
             joints[i].xDrive = drive;
         }
+    }
+
+    public void ApplyConfiguredDriveSettings()
+    {
+        ConfigureJointDrives();
     }
 
     private void ApplyJointTarget(int index)

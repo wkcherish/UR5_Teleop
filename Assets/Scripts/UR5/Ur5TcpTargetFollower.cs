@@ -14,10 +14,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public Transform robotRoot;
     public Transform tcpTarget;
     public Transform endEffector;
+    public Ur5JointTrajectoryPlayer trajectoryPlayer;
 
     [Header("Gripper TCP")]
     [Tooltip("Use the midpoint between the two Robotiq pads as the task-space TCP.")]
-    public bool useGripperPadCenter = true;
+    public bool useGripperPadCenter;
     public Transform leftGripperPad;
     public Transform rightGripperPad;
     public string leftGripperPadName = "left_pad_link";
@@ -37,44 +38,61 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Header("IK")]
     public bool followTarget = true;
     public IkSolverMode solverMode = IkSolverMode.DampedLeastSquares;
-    public float positionTolerance = 0.004f;
+    public float positionTolerance = 0.008f;
     [Tooltip("Keep this at 1. Articulation poses update after FixedUpdate, so repeated CCD passes use stale geometry and cause oscillation.")]
     public int solverIterationsPerFixedUpdate = 1;
     public float angleBlend = 0.48f;
-    public float maxJointStepDegrees = 0.85f;
+    public float maxJointStepDegrees = 0.55f;
+    [Tooltip("Ignores microscopic IK deltas that usually come from tracking noise rather than intentional motion.")]
+    public float minimumJointDeltaDegrees = 0.030f;
     public bool adaptivePositionSpeed = true;
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Prevents CCD from queueing large target jumps before the drive has applied the prior correction.")]
-    public float maximumCommandLeadDegrees = 3.00f;
+    public float maximumCommandLeadDegrees = 2.20f;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
+    [Header("Trajectory-Style Joint Assignment")]
+    [Tooltip("Submit IK joint setpoints at a fixed cadence instead of every physics frame. This mirrors Unity Robotics Hub trajectory playback and avoids servo chatter.")]
+    public bool useTimedJointAssignments = true;
+    public float jointAssignmentIntervalSeconds = 0.03f;
+
     [Header("Damped Least Squares IK")]
     [Tooltip("Higher values trade responsiveness for stability near singular configurations.")]
-    public float dlsDamping = 0.14f;
+    public float dlsDamping = 0.45f;
     [Tooltip("Treats one radian of orientation error as this many meters of task error.")]
-    public float dlsOrientationWeight = 0.72f;
-    public float dlsGain = 0.42f;
+    public float dlsOrientationWeight = 0.35f;
+    public float dlsGain = 0.22f;
     [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
     public bool preferWristForOrientation = true;
     [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
-    [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.55f;
+    [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.74f;
 
     [Header("End Effector Orientation")]
     public bool followTargetRotation = true;
     [Range(1, 3)] public int wristJointCount = 3;
-    public float rotationToleranceDegrees = 0.55f;
-    public float rotationBlend = 0.38f;
-    public float maxWristStepDegrees = 0.85f;
-    [Tooltip("When only the right controller is translating, stop orientation-only corrections after the TCP position is close enough.")]
+    public float rotationToleranceDegrees = 2.00f;
+    public float rotationBlend = 0.24f;
+    public float maxWristStepDegrees = 0.45f;
+    [Tooltip("When only the right controller is translating, fully pause orientation IK so wrist joints do not twitch while chasing pose noise.")]
     public bool suppressRotationOnlyIkDuringPositionControl = true;
 
     [Header("Quest Idle Hold")]
     public Quest3TcpTargetController questController;
+    public Ur5CartesianVelocityTeleopController velocityTeleop;
     public bool pauseIkWhenQuestControllerIdle = true;
+    public bool pauseIkWhenVelocityTeleopIdle = true;
     public bool snapTargetToActualPoseWhenQuestReleased = true;
     public bool holdJointPoseWhenQuestReleased = true;
+
+    [Header("Settled Target Hold")]
+    public bool holdJointPoseWhenTargetSettled = true;
+    public float targetStationaryHoldSeconds = 0.12f;
+    public float targetStationaryPositionEpsilon = 0.0015f;
+    public float targetStationaryRotationEpsilonDegrees = 0.35f;
+    public float settledPositionError = 0.010f;
+    public float settledRotationErrorDegrees = 2.50f;
 
     [Header("Startup Alignment")]
     [Tooltip("Start the target at the current TCP so the robot only moves after user input.")]
@@ -91,9 +109,17 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private bool loggedReady;
     private bool loggedMissingReferences;
-    private bool wasQuestClutched;
-    private bool isQuestIdleHoldActive;
+    private bool wasControllerCommandActive;
+    private bool isControllerIdleHoldActive;
+    private bool hasLastTargetPose;
+    private Vector3 lastTargetPosition;
+    private Quaternion lastTargetRotation = Quaternion.identity;
+    private float targetStationaryTime;
+    private float nextJointAssignmentTime;
     private float[] smoothedJointDeltaDegrees = new float[0];
+    private float[] workingJointTargetsDegrees = new float[0];
+    private int workingJointCount;
+    private bool workingJointWaypointChanged;
 
     public float PositionError { get; private set; }
     public float RotationErrorDegrees { get; private set; }
@@ -127,15 +153,41 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         LogReadyState();
-        if (ShouldPauseForQuestIdle())
+        if (ShouldPauseForControllerIdle())
         {
-            EnterQuestIdleHold();
+            EnterControllerIdleHold();
             return;
         }
 
-        isQuestIdleHoldActive = false;
-        wasQuestClutched = questController != null && questController.IsClutched;
+        UpdateTargetStationaryState(Time.fixedDeltaTime);
+        isControllerIdleHoldActive = false;
+        wasControllerCommandActive = IsAnyControllerCommandActive();
+        if (ShouldWaitForNextJointAssignment())
+        {
+            UpdateTrackingErrorsOnly();
+            return;
+        }
+
         StepTowardTarget();
+    }
+
+    private void OnValidate()
+    {
+        minimumJointDeltaDegrees = Mathf.Max(0.0f, minimumJointDeltaDegrees);
+        dlsDamping = Mathf.Max(0.0f, dlsDamping);
+        dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
+        dlsGain = Mathf.Max(0.0f, dlsGain);
+        targetStationaryHoldSeconds = Mathf.Max(0.0f, targetStationaryHoldSeconds);
+        targetStationaryPositionEpsilon = Mathf.Max(0.0f, targetStationaryPositionEpsilon);
+        targetStationaryRotationEpsilonDegrees = Mathf.Max(0.0f, targetStationaryRotationEpsilonDegrees);
+        settledPositionError = Mathf.Max(0.0f, settledPositionError);
+        settledRotationErrorDegrees = Mathf.Max(0.0f, settledRotationErrorDegrees);
+        jointAssignmentIntervalSeconds = Mathf.Max(0.0f, jointAssignmentIntervalSeconds);
+    }
+
+    private void OnDisable()
+    {
+        ClearTrajectoryQueue();
     }
 
     private void OnDrawGizmos()
@@ -163,6 +215,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             jointController = robotRoot.GetComponent<Ur5ArticulationJointController>();
         }
 
+        if (trajectoryPlayer == null && jointController != null)
+        {
+            trajectoryPlayer = jointController.GetComponent<Ur5JointTrajectoryPlayer>();
+        }
+
+        if (trajectoryPlayer == null && robotRoot != null)
+        {
+            trajectoryPlayer = robotRoot.GetComponent<Ur5JointTrajectoryPlayer>();
+        }
+
         if (robotRoot == null && jointController != null)
         {
             robotRoot = jointController.robotRoot != null ? jointController.robotRoot : jointController.transform;
@@ -180,6 +242,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         if (questController == null && tcpTarget != null)
         {
             questController = tcpTarget.GetComponent<Quest3TcpTargetController>();
+        }
+
+        if (velocityTeleop == null)
+        {
+            velocityTeleop = FindObjectOfType<Ur5CartesianVelocityTeleopController>();
         }
 
         if (endEffector == null && robotRoot != null)
@@ -201,17 +268,31 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
     }
 
-    private bool ShouldPauseForQuestIdle()
+    private bool ShouldPauseForControllerIdle()
     {
+        if (pauseIkWhenVelocityTeleopIdle
+            && velocityTeleop != null
+            && velocityTeleop.enabled)
+        {
+            return !velocityTeleop.IsCommandActive;
+        }
+
         return pauseIkWhenQuestControllerIdle
             && questController != null
             && questController.IsDeviceValid
             && !questController.IsClutched;
     }
 
-    private void EnterQuestIdleHold()
+    private bool IsAnyControllerCommandActive()
     {
-        if (isQuestIdleHoldActive && !wasQuestClutched)
+        bool questActive = questController != null && questController.IsClutched;
+        bool velocityActive = velocityTeleop != null && velocityTeleop.enabled && velocityTeleop.IsCommandActive;
+        return questActive || velocityActive;
+    }
+
+    private void EnterControllerIdleHold()
+    {
+        if (isControllerIdleHoldActive && !wasControllerCommandActive)
         {
             return;
         }
@@ -233,14 +314,19 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         if (holdJointPoseWhenQuestReleased && jointController != null)
         {
-            jointController.HoldCurrentJointPose();
+            HoldCurrentJointsAndClearTrajectory();
+        }
+        else
+        {
+            ClearTrajectoryQueue();
         }
 
         ResetJointDeltaSmoothing();
         PositionError = 0.0f;
         RotationErrorDegrees = 0.0f;
-        wasQuestClutched = false;
-        isQuestIdleHoldActive = true;
+        wasControllerCommandActive = false;
+        isControllerIdleHoldActive = true;
+        nextJointAssignmentTime = Time.time;
     }
 
     private bool HasRequiredReferences()
@@ -273,18 +359,25 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void StepTowardTarget()
     {
-        Vector3 error = tcpTarget.position - GetControlPointPosition();
-        PositionError = error.magnitude;
+        Vector3 error = UpdateTrackingErrorsOnly();
 
         if (PositionError > maxReachError)
         {
             return;
         }
 
+        if (ShouldHoldSettledTarget())
+        {
+            HoldCurrentPoseAtSettledTarget();
+            return;
+        }
+
         int jointCount = Mathf.Min(6, jointController.JointCount);
+        BeginJointWaypoint(jointCount);
         if (solverMode == IkSolverMode.DampedLeastSquares)
         {
             ApplyDampedLeastSquaresStep(jointCount, error);
+            CommitJointWaypoint();
             return;
         }
 
@@ -311,6 +404,165 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         StepOrientationTowardTarget(jointCount);
+        CommitJointWaypoint();
+    }
+
+    private bool ShouldWaitForNextJointAssignment()
+    {
+        if (!useTimedJointAssignments)
+        {
+            return false;
+        }
+
+        float interval = Mathf.Max(0.0f, jointAssignmentIntervalSeconds);
+        if (interval <= 0.0f)
+        {
+            return false;
+        }
+
+        if (Time.time + 0.0001f < nextJointAssignmentTime)
+        {
+            return true;
+        }
+
+        nextJointAssignmentTime = Time.time + interval;
+        return false;
+    }
+
+    private Vector3 UpdateTrackingErrorsOnly()
+    {
+        Vector3 error = tcpTarget.position - GetControlPointPosition();
+        PositionError = error.magnitude;
+        RotationErrorDegrees = ShouldSolveTargetRotation()
+            ? Quaternion.Angle(endEffector.rotation, tcpTarget.rotation)
+            : 0.0f;
+        return error;
+    }
+
+    private void UpdateTargetStationaryState(float deltaTime)
+    {
+        if (tcpTarget == null)
+        {
+            targetStationaryTime = 0.0f;
+            hasLastTargetPose = false;
+            return;
+        }
+
+        if (!hasLastTargetPose)
+        {
+            lastTargetPosition = tcpTarget.position;
+            lastTargetRotation = tcpTarget.rotation;
+            targetStationaryTime = 0.0f;
+            hasLastTargetPose = true;
+            return;
+        }
+
+        bool targetMoved =
+            Vector3.Distance(lastTargetPosition, tcpTarget.position) > targetStationaryPositionEpsilon
+            || Quaternion.Angle(lastTargetRotation, tcpTarget.rotation) > targetStationaryRotationEpsilonDegrees;
+
+        if (targetMoved)
+        {
+            lastTargetPosition = tcpTarget.position;
+            lastTargetRotation = tcpTarget.rotation;
+            targetStationaryTime = 0.0f;
+            return;
+        }
+
+        targetStationaryTime += Mathf.Max(0.0f, deltaTime);
+    }
+
+    private bool ShouldHoldSettledTarget()
+    {
+        return holdJointPoseWhenTargetSettled
+            && targetStationaryTime >= targetStationaryHoldSeconds
+            && PositionError <= settledPositionError
+            && RotationErrorDegrees <= settledRotationErrorDegrees;
+    }
+
+    private void HoldCurrentPoseAtSettledTarget()
+    {
+        if (jointController != null)
+        {
+            HoldCurrentJointsAndClearTrajectory();
+        }
+
+        ResetJointDeltaSmoothing();
+    }
+
+    private void BeginJointWaypoint(int jointCount)
+    {
+        workingJointCount = Mathf.Min(jointCount, jointController.JointCount);
+        EnsureWorkingJointBuffer(workingJointCount);
+        for (int i = 0; i < workingJointCount; i++)
+        {
+            workingJointTargetsDegrees[i] = jointController.GetJointTargetDegrees(i);
+        }
+
+        workingJointWaypointChanged = false;
+    }
+
+    private void QueueJointDelta(int jointIndex, float deltaDegrees)
+    {
+        if (jointIndex < 0 || jointIndex >= workingJointCount)
+        {
+            return;
+        }
+
+        workingJointTargetsDegrees[jointIndex] += deltaDegrees;
+        workingJointWaypointChanged = true;
+    }
+
+    private void CommitJointWaypoint()
+    {
+        if (!workingJointWaypointChanged || workingJointCount <= 0)
+        {
+            return;
+        }
+
+        if (trajectoryPlayer != null && trajectoryPlayer.enabled)
+        {
+            trajectoryPlayer.EnqueueWaypointDegrees(workingJointTargetsDegrees, workingJointCount);
+            return;
+        }
+
+        jointController.SetJointTargetsDegrees(
+            workingJointTargetsDegrees,
+            workingJointCount,
+            clampToDriveLimits,
+            true);
+    }
+
+    private void HoldCurrentJointsAndClearTrajectory()
+    {
+        if (trajectoryPlayer != null && trajectoryPlayer.enabled)
+        {
+            trajectoryPlayer.HoldCurrentJointPose();
+            return;
+        }
+
+        if (jointController != null)
+        {
+            jointController.HoldCurrentJointPose();
+        }
+    }
+
+    private void ClearTrajectoryQueue()
+    {
+        if (trajectoryPlayer != null)
+        {
+            trajectoryPlayer.ClearQueue();
+        }
+    }
+
+    private void EnsureWorkingJointBuffer(int minLength)
+    {
+        if (workingJointTargetsDegrees.Length >= minLength)
+        {
+            return;
+        }
+
+        workingJointTargetsDegrees = new float[minLength];
     }
 
     private void ApplyDampedLeastSquaresStep(int jointCount, Vector3 positionError)
@@ -402,9 +654,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 -maxJointStepDegrees,
                 maxJointStepDegrees);
             float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
-            if (Mathf.Abs(deltaDegrees) > 0.0001f)
+            if (Mathf.Abs(deltaDegrees) > minimumJointDeltaDegrees)
             {
-                jointController.AddJointTargetDegrees(i, deltaDegrees, clampToDriveLimits);
+                QueueJointDelta(i, deltaDegrees);
             }
         }
     }
@@ -435,15 +687,24 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return false;
         }
 
-        if (!suppressRotationOnlyIkDuringPositionControl
-            || questController == null
-            || !questController.IsPositionClutched
-            || questController.IsRotationClutched)
+        if (suppressRotationOnlyIkDuringPositionControl)
         {
-            return true;
+            if (questController != null
+                && questController.IsPositionClutched
+                && !questController.IsRotationClutched)
+            {
+                return false;
+            }
+
+            if (velocityTeleop != null
+                && velocityTeleop.IsPositionClutched
+                && !velocityTeleop.IsRotationClutched)
+            {
+                return false;
+            }
         }
 
-        return PositionError > positionTolerance;
+        return true;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)
@@ -547,9 +808,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             effectiveMaxStep);
         float deltaDegrees = SmoothJointDelta(jointIndex, rawDeltaDegrees);
 
-        if (Mathf.Abs(deltaDegrees) > 0.0001f)
+        if (Mathf.Abs(deltaDegrees) > minimumJointDeltaDegrees)
         {
-            jointController.AddJointTargetDegrees(jointIndex, deltaDegrees, clampToDriveLimits);
+            QueueJointDelta(jointIndex, deltaDegrees);
         }
     }
 
@@ -598,9 +859,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 maxWristStepDegrees);
             float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
 
-            if (Mathf.Abs(deltaDegrees) > 0.0001f)
+            if (Mathf.Abs(deltaDegrees) > minimumJointDeltaDegrees)
             {
-                jointController.AddJointTargetDegrees(i, deltaDegrees, clampToDriveLimits);
+                QueueJointDelta(i, deltaDegrees);
             }
         }
     }

@@ -7,7 +7,7 @@ public class TcpTargetCollisionGuard : MonoBehaviour
     public Transform robotRoot;
 
     [Header("Obstacle Clearance")]
-    public bool preventObstaclePenetration = true;
+    public bool preventObstaclePenetration;
     public float clearanceRadius = 0.055f;
     public LayerMask obstacleLayers = ~0;
 

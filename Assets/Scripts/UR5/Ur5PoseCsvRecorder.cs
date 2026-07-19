@@ -7,7 +7,11 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
 {
     public Transform tcpTarget;
     public Ur5ArticulationJointController jointController;
+    public Ur5TcpTargetFollower tcpFollower;
+    public Ur5JointTrajectoryPlayer trajectoryPlayer;
     public Quest3TcpTargetController questController;
+    public Ur5CartesianVelocityTeleopController velocityTeleop;
+    public Ur5UrScriptSpeedlClient speedlClient;
     public KeyCode toggleRecordingKey = KeyCode.R;
     public bool recordOnStart = false;
     public float sampleInterval = 0.02f;
@@ -20,7 +24,8 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
     private void Start()
     {
         csv = new StringBuilder();
-        csv.AppendLine("time,quest_device_valid,quest_clutched,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg");
+        ResolveControlReferences();
+        csv.AppendLine("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,velocity_active,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps");
         outputPath = Path.Combine(Application.persistentDataPath, "ur5_pose_log.csv");
 
         if (recordOnStart)
@@ -68,21 +73,47 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
 
     private void AppendSample()
     {
-        Vector3 position = tcpTarget != null ? tcpTarget.position : Vector3.zero;
-        Quaternion rotation = tcpTarget != null ? tcpTarget.rotation : Quaternion.identity;
+        ResolveControlReferences();
+        Vector3 targetPosition = tcpTarget != null ? tcpTarget.position : Vector3.zero;
+        Quaternion targetRotation = tcpTarget != null ? tcpTarget.rotation : Quaternion.identity;
+        Vector3 actualPosition = tcpFollower != null ? tcpFollower.ControlPointPosition : targetPosition;
+        float positionError = tcpFollower != null ? tcpFollower.PositionError : Vector3.Distance(targetPosition, actualPosition);
+        float rotationError = tcpFollower != null ? tcpFollower.RotationErrorDegrees : 0.0f;
         bool questDeviceValid = questController != null && questController.IsDeviceValid;
         bool questClutched = questController != null && questController.IsClutched;
+        bool velocityActive = velocityTeleop != null && velocityTeleop.IsCommandActive;
+        Vector3 baseLinearVelocity = velocityTeleop != null ? velocityTeleop.BaseLinearVelocity : Vector3.zero;
+        Vector3 baseAngularVelocity = velocityTeleop != null ? velocityTeleop.BaseAngularVelocity : Vector3.zero;
+        Vector3 rawBaseLinearVelocity = velocityTeleop != null ? velocityTeleop.RawBaseLinearVelocity : Vector3.zero;
+        bool workspaceLimited = velocityTeleop != null && velocityTeleop.IsWorkspaceLimited;
+        bool inputPoseValid = velocityTeleop != null && velocityTeleop.IsInputPoseValid;
+        bool realOutputEnabled = speedlClient != null && speedlClient.enableRealRobotOutput;
+        bool speedlConnected = speedlClient != null && speedlClient.IsConnected;
+        bool motionArmed = speedlClient != null && speedlClient.IsMotionArmed;
+        Vector3 sentLinearVelocity = speedlClient != null ? speedlClient.LastSentLinearVelocity : Vector3.zero;
+        Vector3 sentAngularVelocity = speedlClient != null ? speedlClient.LastSentAngularVelocity : Vector3.zero;
+
+        if (velocityTeleop != null)
+        {
+            questDeviceValid = velocityTeleop.IsDeviceValid;
+            questClutched = velocityTeleop.IsCommandActive;
+        }
 
         csv.Append(Format(Time.time)).Append(',');
         csv.Append(questDeviceValid ? "1" : "0").Append(',');
         csv.Append(questClutched ? "1" : "0").Append(',');
-        csv.Append(Format(position.x)).Append(',');
-        csv.Append(Format(position.y)).Append(',');
-        csv.Append(Format(position.z)).Append(',');
-        csv.Append(Format(rotation.x)).Append(',');
-        csv.Append(Format(rotation.y)).Append(',');
-        csv.Append(Format(rotation.z)).Append(',');
-        csv.Append(Format(rotation.w));
+        csv.Append(Format(targetPosition.x)).Append(',');
+        csv.Append(Format(targetPosition.y)).Append(',');
+        csv.Append(Format(targetPosition.z)).Append(',');
+        csv.Append(Format(actualPosition.x)).Append(',');
+        csv.Append(Format(actualPosition.y)).Append(',');
+        csv.Append(Format(actualPosition.z)).Append(',');
+        csv.Append(Format(positionError)).Append(',');
+        csv.Append(Format(rotationError)).Append(',');
+        csv.Append(Format(targetRotation.x)).Append(',');
+        csv.Append(Format(targetRotation.y)).Append(',');
+        csv.Append(Format(targetRotation.z)).Append(',');
+        csv.Append(Format(targetRotation.w));
 
         for (int i = 0; i < 6; i++)
         {
@@ -90,7 +121,59 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
             csv.Append(',').Append(Format(target));
         }
 
+        csv.Append(',').Append(trajectoryPlayer != null ? trajectoryPlayer.PendingWaypointCount.ToString(CultureInfo.InvariantCulture) : "0");
+        csv.Append(',').Append(Format(trajectoryPlayer != null ? trajectoryPlayer.LastAssignmentTime : 0.0f));
+        csv.Append(',').Append(velocityActive ? "1" : "0");
+        csv.Append(',').Append(Format(baseLinearVelocity.x));
+        csv.Append(',').Append(Format(baseLinearVelocity.y));
+        csv.Append(',').Append(Format(baseLinearVelocity.z));
+        csv.Append(',').Append(Format(baseAngularVelocity.x));
+        csv.Append(',').Append(Format(baseAngularVelocity.y));
+        csv.Append(',').Append(Format(baseAngularVelocity.z));
+        csv.Append(',').Append(Format(rawBaseLinearVelocity.x));
+        csv.Append(',').Append(Format(rawBaseLinearVelocity.y));
+        csv.Append(',').Append(Format(rawBaseLinearVelocity.z));
+        csv.Append(',').Append(workspaceLimited ? "1" : "0");
+        csv.Append(',').Append(inputPoseValid ? "1" : "0");
+        csv.Append(',').Append(realOutputEnabled ? "1" : "0");
+        csv.Append(',').Append(speedlConnected ? "1" : "0");
+        csv.Append(',').Append(motionArmed ? "1" : "0");
+        csv.Append(',').Append(Format(sentLinearVelocity.x));
+        csv.Append(',').Append(Format(sentLinearVelocity.y));
+        csv.Append(',').Append(Format(sentLinearVelocity.z));
+        csv.Append(',').Append(Format(sentAngularVelocity.x));
+        csv.Append(',').Append(Format(sentAngularVelocity.y));
+        csv.Append(',').Append(Format(sentAngularVelocity.z));
+
         csv.AppendLine();
+    }
+
+    private void ResolveControlReferences()
+    {
+        if (tcpFollower == null && jointController != null)
+        {
+            tcpFollower = jointController.GetComponent<Ur5TcpTargetFollower>();
+        }
+
+        if (tcpFollower == null)
+        {
+            tcpFollower = FindObjectOfType<Ur5TcpTargetFollower>();
+        }
+
+        if (velocityTeleop == null)
+        {
+            velocityTeleop = FindObjectOfType<Ur5CartesianVelocityTeleopController>();
+        }
+
+        if (trajectoryPlayer == null)
+        {
+            trajectoryPlayer = FindObjectOfType<Ur5JointTrajectoryPlayer>();
+        }
+
+        if (speedlClient == null)
+        {
+            speedlClient = FindObjectOfType<Ur5UrScriptSpeedlClient>();
+        }
     }
 
     private string Format(float value)
