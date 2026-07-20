@@ -28,12 +28,13 @@ Quest 3 手柄
 
 ## 手柄操作
 
-- 右手 grip：进入一手 6DoF 控制，右手平移带动 TCP 平移，右手姿态变化带动 TCP 旋转。
+- 右手 grip：移动 TCP；手柄的自然转动不会改变夹爪朝向，因此可以稳定地下探抓取。
+- 保持右手 grip 并推右摇杆：显式调整夹爪朝向（左右为绕机器人竖直轴偏航、上下为绕机器人 X 轴俯仰）。松开摇杆时保持当前夹爪朝向。
 - 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
 - 右手 primary/A：细控制模式，降低线速度、角速度和相对位姿映射比例，用于靠近物体或采集精细动作。
 - 右手 secondary/B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。
 - 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
-- 左手柄默认不参与控制；如需回退到摇杆旋转，可把 `rotationInputMode` 改为 `Joystick` 并把 `rotationControllerNode` 设为 `LeftHand`。
+- 左手柄默认不参与控制。若要恢复“手腕姿态直接控制夹爪”，可将 `rotationInputMode` 改回 `ControllerPoseDelta`；这会重新引入下探时因手腕自然转动造成夹爪翻转的风险。
 
 ## 抓取辅助
 
@@ -69,12 +70,12 @@ Quest 3 手柄
 
 1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
 2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.45`、`maxWristStepDegrees = 2.00`、`jointAssignmentIntervalSeconds = 0.016`。
-3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationControllerNode = RightHand`、`rotationInputMode = ControllerPoseDelta`、`relativePreviewRotationScale = 1.80`、`previewMaxAngularSpeedDegreesPerSecond = 420`。
+3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationControllerNode = RightHand`、`rotationInputMode = Joystick`。位移和夹爪朝向由不同输入通道控制，手腕物理姿态不会干扰抓取方向。
 4. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees` 和 `maxWristStepDegrees`，例如从 `1.45` / `2.00` 降到 `1.20` / `1.50`。
 5. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
 6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
 7. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
-8. 如果右手姿态旋转太灵敏，先降低 `relativePreviewRotationScale`；如果仍慢，再提高 `previewMaxAngularSpeedDegreesPerSecond`。
+8. 如果摇杆旋转太快，降低 `joystickYawSpeedDegreesPerSecond` 和 `joystickPitchSpeedDegreesPerSecond`；如果仍慢，再小幅提高它们。
 9. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
 10. 如果普通模式太灵敏，按住 primary/A 进入细控；如果仍太灵敏，降低 `relativePreviewPositionScale` 或 `relativePreviewRotationScale`。
 
@@ -120,4 +121,4 @@ Unity 阶段使用本地关节路点播放来稳定数字孪生；真机阶段�
 - Unity Robotics Hub: <https://github.com/Unity-Technologies/Unity-Robotics-Hub>
 - 参考思路：`tutorials/pick_and_place/Scripts/TrajectoryPlanner.cs` 中的 trajectory execution，会逐个轨迹点把每个关节的 `xDrive.target` 更新为规划结果。
 - Unitree XR Teleoperate: <https://github.com/unitreerobotics/xr_teleoperate>
-- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认使用右手 6DoF 姿态差分控制，保留摇杆旋转作为可选回退，不引入 Unitree SDK。
+- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认将右手位移与摇杆姿态命令分离，避免抓取时的自然腕部转动干扰 TCP，不引入 Unitree SDK。

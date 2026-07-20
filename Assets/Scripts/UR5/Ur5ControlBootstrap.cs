@@ -266,12 +266,15 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        // Keep the gripper orientation independent of natural wrist motion while
+        // reaching down.  Rotation is an explicit thumbstick command instead.
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
         velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
         velocityTeleop.joystickRollSpeedDegreesPerSecond = 200.0f;
-        velocityTeleop.useSecondaryButtonForJoystickRoll = true;
+        // B is reserved for grasp assist, so it must not also roll the TCP.
+        velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.invertJoystickPitch = false;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
         velocityTeleop.linearDeadbandMeters = 0.005f;

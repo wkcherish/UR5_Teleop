@@ -28,7 +28,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public XRNode rotationControllerNode = XRNode.RightHand;
     public bool usePositionGripAsDeadman = true;
     public bool useRotationGripAsDeadman = true;
-    public RotationInputMode rotationInputMode = RotationInputMode.ControllerPoseDelta;
+    [Tooltip("Joystick is the safer default for pick-and-place: moving or naturally turning the controller cannot accidentally reorient the gripper.")]
+    public RotationInputMode rotationInputMode = RotationInputMode.Joystick;
 
     [Header("Velocity Mapping")]
     [Tooltip("Meters/second generated per meter of right-hand displacement from the clutch origin.")]
@@ -36,20 +37,20 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float maxLinearSpeed = 0.14f;
     public float linearDeadbandMeters = 0.005f;
 
-    [Tooltip("Radians/second generated per radian of left-hand rotation from the clutch orientation.")]
+    [Tooltip("Radians/second generated per radian of controller rotation when ControllerPoseDelta mode is explicitly selected.")]
     public float angularSpeedGain = 1.30f;
     public float maxAngularSpeedRadiansPerSecond = 4.00f;
     public float angularDeadbandDegrees = 1.2f;
 
     [Header("Joystick Rotation")]
-    [Tooltip("Deadband for the left thumbstick rotation mode.")]
+    [Tooltip("Deadband for the rotation-controller thumbstick.")]
     public float rotationJoystickDeadband = 0.12f;
-    [Tooltip("Left stick X. Positive turns the TCP around the robot base Y axis.")]
+    [Tooltip("Rotation-controller thumbstick X. Positive turns the TCP around the robot base Y axis.")]
     public float joystickYawSpeedDegreesPerSecond = 220.0f;
-    [Tooltip("Left stick Y. Positive pitches the TCP around the robot base X axis.")]
+    [Tooltip("Rotation-controller thumbstick Y. Positive pitches the TCP around the robot base X axis.")]
     public float joystickPitchSpeedDegreesPerSecond = 180.0f;
-    [Tooltip("Hold the left secondary button and use stick X for TCP roll around the robot base Z axis.")]
-    public bool useSecondaryButtonForJoystickRoll = true;
+    [Tooltip("Hold the rotation-controller secondary button and use stick X for TCP roll around the robot base Z axis.")]
+    public bool useSecondaryButtonForJoystickRoll = false;
     public float joystickRollSpeedDegreesPerSecond = 200.0f;
     public bool invertJoystickPitch = false;
     [Tooltip("When the joystick returns to deadband, stop angular preview immediately instead of coasting through the velocity filter.")]
