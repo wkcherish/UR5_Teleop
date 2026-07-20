@@ -89,6 +89,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float previewMaxLinearSpeed = 0.35f;
     public float previewMaxAngularSpeedDegreesPerSecond = 420.0f;
 
+    [Header("Grasp Axis Assist")]
+    [Tooltip("When the physical grasp axis is close to world up/down, snap it exactly vertical while preserving the jaw yaw. This removes small controller-roll errors during top-down grasps.")]
+    public bool snapGraspApproachToVertical = true;
+    [Range(1.0f, 89.0f)] public float verticalApproachSnapDegrees = 32.0f;
+
     [Header("Actual TCP Lead Limit")]
     [Tooltip("Prevents the IK command target from running far ahead of the real two-pad TCP when the hand moves faster than the arm can track.")]
     public bool limitPreviewLeadToActualTcp = true;
@@ -121,6 +126,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Quaternion rotationNeutralWorldRotation;
     private Vector3 positionClutchStartTargetWorldPosition;
     private Quaternion rotationClutchStartTargetWorldRotation;
+    private Quaternion rotationClutchStartGraspWorldRotation;
     private Vector3 latestPositionWorld;
     private Quaternion latestRotationWorld = Quaternion.identity;
     private bool latestPositionValid;
@@ -276,6 +282,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             if (tcpPreviewTarget != null)
             {
                 rotationClutchStartTargetWorldRotation = tcpPreviewTarget.rotation;
+                rotationClutchStartGraspWorldRotation = tcpFollower != null
+                    ? tcpFollower.ActualGraspRotation
+                    : tcpPreviewTarget.rotation;
             }
         }
     }
@@ -584,7 +593,46 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         float scaledAngle = Mathf.Sign(angleDegrees)
             * Mathf.Max(0.0f, Mathf.Abs(angleDegrees) - angularDeadbandDegrees)
             * GetRelativePreviewRotationScale();
-        return Quaternion.AngleAxis(scaledAngle, axis.normalized) * rotationClutchStartTargetWorldRotation;
+        Quaternion controllerRotationDelta = Quaternion.AngleAxis(scaledAngle, axis.normalized);
+        Quaternion desiredGraspRotation = controllerRotationDelta * rotationClutchStartGraspWorldRotation;
+        desiredGraspRotation = SnapGraspApproachToVertical(desiredGraspRotation);
+        return tcpFollower != null
+            ? tcpFollower.GetToolRotationForGraspRotation(desiredGraspRotation)
+            : controllerRotationDelta * rotationClutchStartTargetWorldRotation;
+    }
+
+    private Quaternion SnapGraspApproachToVertical(Quaternion desiredGraspRotation)
+    {
+        if (!snapGraspApproachToVertical)
+        {
+            return desiredGraspRotation;
+        }
+
+        Vector3 approach = desiredGraspRotation * Vector3.forward;
+        Vector3 snappedApproach;
+        float snapAngle = Mathf.Clamp(verticalApproachSnapDegrees, 1.0f, 89.0f);
+        if (Vector3.Angle(approach, Vector3.down) <= snapAngle)
+        {
+            snappedApproach = Vector3.down;
+        }
+        else if (Vector3.Angle(approach, Vector3.up) <= snapAngle)
+        {
+            snappedApproach = Vector3.up;
+        }
+        else
+        {
+            return desiredGraspRotation;
+        }
+
+        // Keep the current jaw yaw, while removing the unwanted roll/pitch
+        // residual that makes a visually vertical gripper look skewed.
+        Vector3 jawUp = Vector3.ProjectOnPlane(desiredGraspRotation * Vector3.up, snappedApproach);
+        if (jawUp.sqrMagnitude < 0.0001f)
+        {
+            jawUp = Vector3.ProjectOnPlane(Vector3.forward, snappedApproach);
+        }
+
+        return Quaternion.LookRotation(snappedApproach, jawUp.normalized);
     }
 
     private Quaternion CalculateJoystickPreviewRotation(Quaternion currentRotation, float deltaTime)
@@ -860,6 +908,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewRotationSmoothingSharpness = Mathf.Max(0.0f, previewRotationSmoothingSharpness);
         previewMaxLinearSpeed = Mathf.Max(0.0f, previewMaxLinearSpeed);
         previewMaxAngularSpeedDegreesPerSecond = Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond);
+        verticalApproachSnapDegrees = Mathf.Clamp(verticalApproachSnapDegrees, 1.0f, 89.0f);
         maximumPreviewLeadMeters = Mathf.Max(0.0f, maximumPreviewLeadMeters);
         fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);

@@ -570,14 +570,18 @@ public class Ur5GraspAssistController : MonoBehaviour
             return Quaternion.Euler(fixedTcpRotationEuler);
         }
 
-        // URDF tool0 defines +Z as the tool's forward/approach axis. For a
-        // top-down grasp that axis must point opposite to the world-up approach
-        // direction, i.e. toward the object. Choosing a horizontal reference
-        // also prevents a singular LookRotation when the tool points down.
-        Vector3 toolForwardWorld = -approachDirection.normalized;
+        // Derive the target in the physical grasp frame (base -> pad midpoint)
+        // and then convert it to the imported tool frame. This avoids relying
+        // on a guessed tool0 axis convention.
         Vector3 yawReference = graspYawReferenceWorld.sqrMagnitude > 0.0001f
             ? graspYawReferenceWorld
             : robotRoot != null ? robotRoot.forward : Vector3.forward;
+        if (tcpFollower != null)
+        {
+            return tcpFollower.GetToolRotationForGraspApproach(-approachDirection, yawReference);
+        }
+
+        Vector3 toolForwardWorld = -approachDirection.normalized;
         Vector3 toolUpWorld = Vector3.ProjectOnPlane(yawReference, toolForwardWorld);
         if (toolUpWorld.sqrMagnitude < 0.0001f)
         {

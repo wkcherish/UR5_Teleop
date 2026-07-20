@@ -189,6 +189,7 @@ public static class Ur5AutoSceneBootstrap
     {
         follower.useGripperPadCenter = true;
         follower.usePadGeometryCenter = true;
+        follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
         follower.maxJointStepDegrees = 1.45f;
         follower.minimumJointDeltaDegrees = 0.015f;
@@ -196,12 +197,14 @@ public static class Ur5AutoSceneBootstrap
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.016f;
         follower.dlsDamping = 0.32f;
-        follower.dlsOrientationWeight = 0.55f;
+        follower.dlsOrientationWeight = 1.50f;
         follower.dlsGain = 0.46f;
-        follower.jointDeltaSmoothing = 0.45f;
-        follower.rotationToleranceDegrees = 1.20f;
+        follower.proximalOrientationWeight = 0.05f;
+        follower.jointDeltaSmoothing = 0.20f;
+        follower.rotationToleranceDegrees = 0.45f;
         follower.rotationBlend = 0.70f;
-        follower.maxWristStepDegrees = 2.00f;
+        follower.maxWristStepDegrees = 3.00f;
+        follower.suppressRotationOnlyIkDuringPositionControl = false;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
         follower.targetStationaryPositionEpsilon = 0.0015f;
@@ -223,10 +226,11 @@ public static class Ur5AutoSceneBootstrap
     private static void ApplyStableVelocityTeleopDefaults(Ur5CartesianVelocityTeleopController velocityTeleop)
     {
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
-        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
+        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // Standard collection mode uses position-only hand control.
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+        // Right hand translates and left hand controls grasp attitude through
+        // a relative quaternion clutch.
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
         velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
@@ -235,15 +239,17 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.invertJoystickPitch = false;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
         velocityTeleop.linearDeadbandMeters = 0.005f;
-        velocityTeleop.angularDeadbandDegrees = 1.2f;
+        velocityTeleop.angularDeadbandDegrees = 2.5f;
         velocityTeleop.relativePreviewPositionScale = 2.40f;
-        velocityTeleop.relativePreviewRotationScale = 1.80f;
+        velocityTeleop.relativePreviewRotationScale = 0.80f;
         velocityTeleop.previewMaxLinearSpeed = 0.35f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
         velocityTeleop.limitPreviewLeadToActualTcp = true;
         velocityTeleop.maximumPreviewLeadMeters = 0.05f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
-        velocityTeleop.previewRotationSmoothingSharpness = 28.0f;
+        velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
+        velocityTeleop.snapGraspApproachToVertical = true;
+        velocityTeleop.verticalApproachSnapDegrees = 32.0f;
         velocityTeleop.enableFineControlButton = false;
         velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;

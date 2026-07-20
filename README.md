@@ -28,12 +28,13 @@ Quest 3 手柄
 
 ## 手柄操作
 
-- 右手 grip：移动两片 Robotiq 指腹中心的 TCP；手柄自然转动不会改变夹爪朝向。
-- 默认不使用摇杆：TCP 姿态在手动移动时保持。仅在特殊调试任务中，才在 Inspector 将 `rotationInputMode` 改为 `Joystick` 来手动调姿。
+- 右手 grip：移动两片 Robotiq 指腹中心的 TCP。
+- 左手 grip：用相对四元数控制夹爪姿态。上/下转动左手可连续改变夹爪朝上或朝下；右手平移不会串入姿态控制。
+- 当夹爪接近朝上或朝下（默认 32° 范围）时，系统自动吸附为精确竖直姿态，同时保留夹爪开口的水平朝向；之后右手移动会优先保持该姿态。
 - 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
 - 右手 A 或 B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。两键均可用，避免 Quest 构建中的 A/B 映射差异。
 - 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
-- 左手柄默认不参与控制。抓取辅助会按 `tool0` 的 +Z 工具轴自动对准物体方向（世界向下），再执行 `PreGrasp → Grasp → Close → Lift`，其中下探与抬升均为直线段。
+- 抓取姿态不再假设 `tool0` 的轴向：运行时由“Robotiq 基座 → 两指中心”建立真实抓取坐标系，再标定到导入后的工具坐标系。
 - 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.05m`。
 
 ## 抓取辅助
@@ -70,7 +71,7 @@ Quest 3 手柄
 
 1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
 2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.45`、`maxWristStepDegrees = 2.00`、`jointAssignmentIntervalSeconds = 0.016`。
-3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationInputMode = Locked`。手柄只移动 TCP；自动抓取负责将工具轴对准世界向下。
+3. 默认双手参数：`positionControllerNode = RightHand`、`rotationControllerNode = LeftHand`、`rotationInputMode = ControllerPoseDelta`。右手位置、左手姿态彼此独立。
 4. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees` 和 `maxWristStepDegrees`，例如从 `1.45` / `2.00` 降到 `1.20` / `1.50`。
 5. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
 6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。

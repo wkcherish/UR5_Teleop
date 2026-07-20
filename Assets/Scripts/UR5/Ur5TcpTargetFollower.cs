@@ -23,6 +23,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public Transform rightGripperPad;
     public string leftGripperPadName = "left_pad_link";
     public string rightGripperPadName = "right_pad_link";
+    [Tooltip("Robotiq base used with the two pads to derive the physical grasp approach axis at runtime.")]
+    public Transform gripperBase;
+    public string gripperBaseName = "robotiq_base_link";
     public bool usePadGeometryCenter = true;
 
     [Header("End Effector Search")]
@@ -122,10 +125,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private float[] workingJointTargetsDegrees = new float[0];
     private int workingJointCount;
     private bool workingJointWaypointChanged;
+    private bool hasToolToGraspRotation;
+    private Quaternion toolToGraspRotation = Quaternion.identity;
 
     public float PositionError { get; private set; }
     public float RotationErrorDegrees { get; private set; }
     public Vector3 ControlPointPosition => GetControlPointPosition();
+    public Quaternion ActualGraspRotation => GetActualGraspRotation();
 
     private void Awake()
     {
@@ -271,6 +277,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             if (rightGripperPad == null)
             {
                 rightGripperPad = FindByNameHint(robotRoot, rightGripperPadName);
+            }
+
+            if (gripperBase == null)
+            {
+                gripperBase = FindByNameHint(robotRoot, gripperBaseName);
             }
         }
     }
@@ -953,6 +964,87 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         return endEffector != null ? endEffector.position : transform.position;
+    }
+
+    /// <summary>
+    /// Builds the task frame from the physical gripper: forward is Robotiq
+    /// base -> two-pad midpoint and up is perpendicular to the jaw axis.
+    /// This avoids assuming a particular URDF/Unity tool-axis conversion.
+    /// </summary>
+    private Quaternion GetActualGraspRotation()
+    {
+        ResolveReferences();
+        if (!TryGetPhysicalGraspRotation(out Quaternion graspRotation))
+        {
+            return endEffector != null ? endEffector.rotation : Quaternion.identity;
+        }
+
+        EnsureToolToGraspRotation(graspRotation);
+        return graspRotation;
+    }
+
+    public Quaternion GetToolRotationForGraspRotation(Quaternion desiredGraspRotation)
+    {
+        Quaternion currentGraspRotation = GetActualGraspRotation();
+        EnsureToolToGraspRotation(currentGraspRotation);
+        return hasToolToGraspRotation
+            ? desiredGraspRotation * Quaternion.Inverse(toolToGraspRotation)
+            : desiredGraspRotation;
+    }
+
+    public Quaternion GetToolRotationForGraspApproach(
+        Vector3 desiredApproachWorld,
+        Vector3 yawReferenceWorld)
+    {
+        Vector3 forward = desiredApproachWorld.sqrMagnitude > 0.0001f
+            ? desiredApproachWorld.normalized
+            : Vector3.down;
+        Vector3 up = Vector3.ProjectOnPlane(yawReferenceWorld, forward);
+        if (up.sqrMagnitude < 0.0001f)
+        {
+            up = Vector3.ProjectOnPlane(Vector3.right, forward);
+        }
+
+        return GetToolRotationForGraspRotation(Quaternion.LookRotation(forward, up.normalized));
+    }
+
+    private bool TryGetPhysicalGraspRotation(out Quaternion graspRotation)
+    {
+        graspRotation = Quaternion.identity;
+        if (!useGripperPadCenter
+            || leftGripperPad == null
+            || rightGripperPad == null
+            || gripperBase == null)
+        {
+            return false;
+        }
+
+        Vector3 approach = GetControlPointPosition() - gripperBase.position;
+        Vector3 jawAxis = rightGripperPad.position - leftGripperPad.position;
+        if (approach.sqrMagnitude < 0.000001f || jawAxis.sqrMagnitude < 0.000001f)
+        {
+            return false;
+        }
+
+        Vector3 up = Vector3.Cross(jawAxis.normalized, approach.normalized);
+        if (up.sqrMagnitude < 0.000001f)
+        {
+            return false;
+        }
+
+        graspRotation = Quaternion.LookRotation(approach.normalized, up.normalized);
+        return true;
+    }
+
+    private void EnsureToolToGraspRotation(Quaternion graspRotation)
+    {
+        if (hasToolToGraspRotation || endEffector == null)
+        {
+            return;
+        }
+
+        toolToGraspRotation = Quaternion.Inverse(endEffector.rotation) * graspRotation;
+        hasToolToGraspRotation = true;
     }
 
     private Vector3 GetPadCenter(Transform pad)
