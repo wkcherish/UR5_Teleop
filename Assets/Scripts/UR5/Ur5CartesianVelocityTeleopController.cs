@@ -103,8 +103,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Range(1.0f, 89.0f)] public float verticalApproachSnapDegrees = 32.0f;
 
     [Header("Left Controller Safety Pose")]
-    [Tooltip("Press X on the left controller once to align the physical grasp axis with world down.")]
+    [Tooltip("Tap X on the left controller to align the physical grasp axis with world down. Hold it to run the configured ready-pose trajectory.")]
     public bool enableLeftPrimarySnapDown = true;
+    [Tooltip("Holding X for this duration starts the full gripper-down ready pose. Releasing X before arrival safely holds the current joint pose.")]
+    public bool enableLeftPrimaryReadyPose = true;
+    public float leftPrimaryReadyPoseHoldSeconds = 0.45f;
     [Tooltip("Hold Y on the left controller to freeze the current TCP orientation while the right hand translates.")]
     public bool enableLeftSecondaryOrientationHold = true;
 
@@ -159,6 +162,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 filteredBaseAngularVelocity;
     private Ur5TcpTargetFollower tcpFollower;
     private bool leftPrimaryWasPressed;
+    private float leftPrimaryHeldSeconds;
+    private bool leftPrimaryReadyPoseWasRequested;
     private bool leftSecondaryWasPressed;
     private bool hasPersistentOrientationTarget;
     private Quaternion persistentOrientationTarget = Quaternion.identity;
@@ -688,7 +693,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             || !rotationDevice.isValid
             || tcpPreviewTarget == null)
         {
+            if (tcpFollower != null && tcpFollower.IsReadyPoseActive)
+            {
+                tcpFollower.CancelReadyPose();
+            }
+
             leftPrimaryWasPressed = false;
+            leftPrimaryHeldSeconds = 0.0f;
+            leftPrimaryReadyPoseWasRequested = false;
             leftSecondaryWasPressed = false;
             IsSafetyOrientationHoldActive = false;
             return;
@@ -708,6 +720,27 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 ? tcpFollower.GetToolRotationForGraspApproach(Vector3.down, yawReference)
                 : tcpPreviewTarget.rotation;
             hasPersistentOrientationTarget = true;
+        }
+
+        if (primaryPressed)
+        {
+            leftPrimaryHeldSeconds += Time.deltaTime;
+            if (enableLeftPrimaryReadyPose
+                && !leftPrimaryReadyPoseWasRequested
+                && leftPrimaryHeldSeconds >= Mathf.Max(0.0f, leftPrimaryReadyPoseHoldSeconds))
+            {
+                leftPrimaryReadyPoseWasRequested = tcpFollower != null && tcpFollower.BeginReadyPose();
+            }
+        }
+        else
+        {
+            if (leftPrimaryWasPressed && tcpFollower != null && tcpFollower.IsReadyPoseActive)
+            {
+                tcpFollower.CancelReadyPose();
+            }
+
+            leftPrimaryHeldSeconds = 0.0f;
+            leftPrimaryReadyPoseWasRequested = false;
         }
 
         if (secondaryPressed && !leftSecondaryWasPressed)
@@ -1049,6 +1082,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewMaxLinearSpeed = Mathf.Max(0.0f, previewMaxLinearSpeed);
         previewMaxAngularSpeedDegreesPerSecond = Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond);
         verticalApproachSnapDegrees = Mathf.Clamp(verticalApproachSnapDegrees, 1.0f, 89.0f);
+        leftPrimaryReadyPoseHoldSeconds = Mathf.Max(0.0f, leftPrimaryReadyPoseHoldSeconds);
         maximumPreviewLeadMeters = Mathf.Max(0.0f, maximumPreviewLeadMeters);
         fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);

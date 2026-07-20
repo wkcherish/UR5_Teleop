@@ -242,6 +242,12 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.targetStationaryRotationEpsilonDegrees = 0.30f;
         follower.settledPositionError = 0.010f;
         follower.settledRotationErrorDegrees = 1.50f;
+        // Standard UR5 gripper-down pre-grasp configuration. It is invoked by
+        // holding X on the left controller, and may be fine-tuned in Inspector.
+        follower.enableReadyPose = true;
+        follower.readyPoseJointDegrees = new[] { 0.0f, -90.0f, 90.0f, -90.0f, -90.0f, 0.0f };
+        follower.readyPoseMaxJointSpeedDegreesPerSecond = 40.0f;
+        follower.readyPoseJointToleranceDegrees = 1.5f;
 
         Ur5ActualTcpMarker actualMarker = tcpTarget.GetComponent<Ur5ActualTcpMarker>();
         if (actualMarker == null)
@@ -311,6 +317,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.snapGraspApproachToVertical = true;
         velocityTeleop.verticalApproachSnapDegrees = 32.0f;
         velocityTeleop.enableLeftPrimarySnapDown = true;
+        velocityTeleop.enableLeftPrimaryReadyPose = true;
+        velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
         velocityTeleop.enableLeftSecondaryOrientationHold = true;
         velocityTeleop.enableFineControlButton = false;
         velocityTeleop.applyFineControlToRelativePreview = false;

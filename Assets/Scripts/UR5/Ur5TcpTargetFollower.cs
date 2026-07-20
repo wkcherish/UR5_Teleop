@@ -99,6 +99,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public float settledPositionError = 0.010f;
     public float settledRotationErrorDegrees = 1.50f;
 
+    [Header("Ready Pose")]
+    [Tooltip("A safe, gripper-down starting configuration for repeated pick-and-place trials. It is reached with a rate-limited joint trajectory, not an instantaneous reset.")]
+    public bool enableReadyPose = true;
+    [Tooltip("UR5 joint targets in degrees: shoulder pan, shoulder lift, elbow, wrist 1, wrist 2, wrist 3.")]
+    public float[] readyPoseJointDegrees = { 0.0f, -90.0f, 90.0f, -90.0f, -90.0f, 0.0f };
+    [Tooltip("Maximum change of each ready-pose joint target per second.")]
+    public float readyPoseMaxJointSpeedDegreesPerSecond = 40.0f;
+    [Tooltip("The move completes only after each measured joint is within this tolerance of its ready target.")]
+    public float readyPoseJointToleranceDegrees = 1.5f;
+
     [Header("Startup Alignment")]
     [Tooltip("Start the target at the current TCP so the robot only moves after user input.")]
     public bool snapTargetToEndEffectorOnStart = true;
@@ -127,11 +137,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool workingJointWaypointChanged;
     private bool hasToolToGraspRotation;
     private Quaternion toolToGraspRotation = Quaternion.identity;
+    private bool isReadyPoseActive;
 
     public float PositionError { get; private set; }
     public float RotationErrorDegrees { get; private set; }
     public Vector3 ControlPointPosition => GetControlPointPosition();
     public Quaternion ActualGraspRotation => GetActualGraspRotation();
+    public bool IsReadyPoseActive => isReadyPoseActive;
 
     private void Awake()
     {
@@ -161,6 +173,12 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         LogReadyState();
+        if (isReadyPoseActive)
+        {
+            StepTowardReadyPose();
+            return;
+        }
+
         if (ShouldPauseForControllerIdle())
         {
             EnterControllerIdleHold();
@@ -191,11 +209,53 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         settledPositionError = Mathf.Max(0.0f, settledPositionError);
         settledRotationErrorDegrees = Mathf.Max(0.0f, settledRotationErrorDegrees);
         jointAssignmentIntervalSeconds = Mathf.Max(0.0f, jointAssignmentIntervalSeconds);
+        readyPoseMaxJointSpeedDegreesPerSecond = Mathf.Max(0.0f, readyPoseMaxJointSpeedDegreesPerSecond);
+        readyPoseJointToleranceDegrees = Mathf.Max(0.01f, readyPoseJointToleranceDegrees);
     }
 
     private void OnDisable()
     {
+        isReadyPoseActive = false;
         ClearTrajectoryQueue();
+    }
+
+    /// <summary>
+    /// Starts the rate-limited joint trajectory to the configured gripper-down
+    /// ready pose. Manual TCP IK is suspended until it arrives or is cancelled.
+    /// </summary>
+    public bool BeginReadyPose()
+    {
+        ResolveReferences();
+        int jointCount = jointController != null ? Mathf.Min(6, jointController.JointCount) : 0;
+        if (!enableReadyPose
+            || jointCount <= 0
+            || readyPoseJointDegrees == null
+            || readyPoseJointDegrees.Length < jointCount)
+        {
+            return false;
+        }
+
+        ClearTrajectoryQueue();
+        ResetJointDeltaSmoothing();
+        isReadyPoseActive = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Stops an in-progress ready-pose move at the current measured joint pose.
+    /// Used when the operator releases the hold-to-run X control early.
+    /// </summary>
+    public void CancelReadyPose()
+    {
+        if (!isReadyPoseActive)
+        {
+            return;
+        }
+
+        isReadyPoseActive = false;
+        HoldCurrentJointsAndClearTrajectory();
+        ResetJointDeltaSmoothing();
+        SnapTargetToEndEffector();
     }
 
     private void OnDrawGizmos()
@@ -431,6 +491,56 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         StepOrientationTowardTarget(jointCount);
         CommitJointWaypoint();
+    }
+
+    private void StepTowardReadyPose()
+    {
+        int jointCount = Mathf.Min(6, jointController.JointCount);
+        if (readyPoseJointDegrees == null || readyPoseJointDegrees.Length < jointCount)
+        {
+            CancelReadyPose();
+            return;
+        }
+
+        BeginJointWaypoint(jointCount);
+        float targetStep = Mathf.Max(0.0f, readyPoseMaxJointSpeedDegreesPerSecond)
+            * Mathf.Max(Time.fixedDeltaTime, 0.0001f);
+        bool allTargetSetpointsReached = true;
+        bool allMeasuredJointsReached = true;
+
+        for (int i = 0; i < jointCount; i++)
+        {
+            float readyTarget = readyPoseJointDegrees[i];
+            float currentTarget = jointController.GetJointTargetDegrees(i);
+            float nextTarget = Mathf.MoveTowards(currentTarget, readyTarget, targetStep);
+            if (Mathf.Abs(nextTarget - currentTarget) > 0.0001f)
+            {
+                workingJointTargetsDegrees[i] = nextTarget;
+                workingJointWaypointChanged = true;
+            }
+
+            if (Mathf.Abs(currentTarget - readyTarget) > 0.05f)
+            {
+                allTargetSetpointsReached = false;
+            }
+
+            if (Mathf.Abs(jointController.GetMeasuredJointDegrees(i) - readyTarget)
+                > Mathf.Max(0.01f, readyPoseJointToleranceDegrees))
+            {
+                allMeasuredJointsReached = false;
+            }
+        }
+
+        CommitJointWaypoint();
+        if (!allTargetSetpointsReached || !allMeasuredJointsReached)
+        {
+            return;
+        }
+
+        isReadyPoseActive = false;
+        ClearTrajectoryQueue();
+        ResetJointDeltaSmoothing();
+        SnapTargetToEndEffector();
     }
 
     private bool ShouldWaitForNextJointAssignment()
