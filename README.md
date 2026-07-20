@@ -28,13 +28,13 @@ Quest 3 手柄
 
 ## 手柄操作
 
-- 右手 grip：移动 TCP；手柄的自然转动不会改变夹爪朝向，因此可以稳定地下探抓取。
-- 保持右手 grip 并推右摇杆：显式调整夹爪朝向（左右为绕机器人竖直轴偏航、上下为绕机器人 X 轴俯仰）。松开摇杆时保持当前夹爪朝向。
+- 右手 grip：移动两片 Robotiq 指腹中心的 TCP；手柄自然转动不会改变夹爪朝向。
+- 默认不使用摇杆：TCP 姿态在手动移动时保持。仅在特殊调试任务中，才在 Inspector 将 `rotationInputMode` 改为 `Joystick` 来手动调姿。
 - 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
-- 右手 primary/A：细控制模式，降低线速度、角速度和相对位姿映射比例，用于靠近物体或采集精细动作。
-- 右手 secondary/B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。
+- 右手 A 或 B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。两键均可用，避免 Quest 构建中的 A/B 映射差异。
 - 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
-- 左手柄默认不参与控制。若要恢复“手腕姿态直接控制夹爪”，可将 `rotationInputMode` 改回 `ControllerPoseDelta`；这会重新引入下探时因手腕自然转动造成夹爪翻转的风险。
+- 左手柄默认不参与控制。抓取辅助会按 `tool0` 的 +Z 工具轴自动对准物体方向（世界向下），再执行 `PreGrasp → Grasp → Close → Lift`，其中下探与抬升均为直线段。
+- 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.05m`。
 
 ## 抓取辅助
 
@@ -49,9 +49,9 @@ Quest 3 手柄
   -> 交还手柄控制
 ```
 
-- 默认自动选择 `TcpTarget` 附近 `0.35m` 内、尺寸小于 `0.35m` 的非机器人碰撞体。
+- 默认自动选择 `TcpTarget` 附近 `0.50m` 内、尺寸小于 `0.35m` 的非机器人物体；若物体没有 Collider，会回退到最近的 Renderer。
 - 抓取辅助期间会暂停 `Ur5CartesianVelocityTeleopController.enableUnityPreview`，防止手柄输入和自动抓取目标互相打架。
-- 抓取辅助默认保持当前 TCP 姿态；实际使用时先用右手 grip 一手调整夹爪位姿，再按右手 secondary/B 启动辅助。
+- 抓取辅助会固定工具朝下；将绿色 `ActualTcp` 靠近物体后，按 A 或 B 启动辅助。
 - 安全检查会阻止 TCP 目标进入机器人本体近距离区域，降低撞到自身手臂的风险。
 
 ## 关键脚本
@@ -70,14 +70,14 @@ Quest 3 手柄
 
 1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
 2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.45`、`maxWristStepDegrees = 2.00`、`jointAssignmentIntervalSeconds = 0.016`。
-3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationControllerNode = RightHand`、`rotationInputMode = Joystick`。位移和夹爪朝向由不同输入通道控制，手腕物理姿态不会干扰抓取方向。
+3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationInputMode = Locked`。手柄只移动 TCP；自动抓取负责将工具轴对准世界向下。
 4. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees` 和 `maxWristStepDegrees`，例如从 `1.45` / `2.00` 降到 `1.20` / `1.50`。
 5. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
 6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
 7. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
-8. 如果摇杆旋转太快，降低 `joystickYawSpeedDegreesPerSecond` 和 `joystickPitchSpeedDegreesPerSecond`；如果仍慢，再小幅提高它们。
+8. 抓取辅助默认以 `0.10 m/s`、`0.45 m/s²` 在预抓取、下探和抬升三段间插补。若需要更快，先提高 `assistMoveSpeed`，再谨慎提高 `assistMoveAcceleration`。
 9. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
-10. 如果普通模式太灵敏，按住 primary/A 进入细控；如果仍太灵敏，降低 `relativePreviewPositionScale` 或 `relativePreviewRotationScale`。
+10. A/B 已保留给抓取辅助；如果普通移动太灵敏，降低 `relativePreviewPositionScale`。
 
 ## 真机扩展策略
 
@@ -121,4 +121,4 @@ Unity 阶段使用本地关节路点播放来稳定数字孪生；真机阶段�
 - Unity Robotics Hub: <https://github.com/Unity-Technologies/Unity-Robotics-Hub>
 - 参考思路：`tutorials/pick_and_place/Scripts/TrajectoryPlanner.cs` 中的 trajectory execution，会逐个轨迹点把每个关节的 `xDrive.target` 更新为规划结果。
 - Unitree XR Teleoperate: <https://github.com/unitreerobotics/xr_teleoperate>
-- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认将右手位移与摇杆姿态命令分离，避免抓取时的自然腕部转动干扰 TCP，不引入 Unitree SDK。
+- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认锁定抓取姿态、以两指中心作为 TCP，并使用分段直线抓取轨迹，不引入 Unitree SDK。

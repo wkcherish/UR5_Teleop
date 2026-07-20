@@ -13,7 +13,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public enum RotationInputMode
     {
         Joystick,
-        ControllerPoseDelta
+        ControllerPoseDelta,
+        Locked
     }
 
     [Header("References")]
@@ -28,8 +29,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public XRNode rotationControllerNode = XRNode.RightHand;
     public bool usePositionGripAsDeadman = true;
     public bool useRotationGripAsDeadman = true;
-    [Tooltip("Joystick is the safer default for pick-and-place: moving or naturally turning the controller cannot accidentally reorient the gripper.")]
-    public RotationInputMode rotationInputMode = RotationInputMode.Joystick;
+    [Tooltip("Locked is the pick-and-place default: translation is tracked while the TCP attitude is held. Joystick and controller-pose modes are optional Inspector-only modes for special tasks.")]
+    public RotationInputMode rotationInputMode = RotationInputMode.Locked;
 
     [Header("Velocity Mapping")]
     [Tooltip("Meters/second generated per meter of right-hand displacement from the clutch origin.")]
@@ -88,6 +89,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float previewMaxLinearSpeed = 0.35f;
     public float previewMaxAngularSpeedDegreesPerSecond = 420.0f;
 
+    [Header("Actual TCP Lead Limit")]
+    [Tooltip("Prevents the IK command target from running far ahead of the real two-pad TCP when the hand moves faster than the arm can track.")]
+    public bool limitPreviewLeadToActualTcp = true;
+    public float maximumPreviewLeadMeters = 0.05f;
+
     [Header("Grip Hysteresis")]
     [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
     [Range(0.0f, 1.0f)] public float gripReleaseThreshold = 0.40f;
@@ -128,6 +134,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 limitedBaseAngularVelocity;
     private Vector3 filteredBaseLinearVelocity;
     private Vector3 filteredBaseAngularVelocity;
+    private Ur5TcpTargetFollower tcpFollower;
 
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
@@ -141,6 +148,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 BaseLinearVelocity => filteredBaseLinearVelocity;
     public Vector3 BaseAngularVelocity => filteredBaseAngularVelocity;
     public RotationInputMode CurrentRotationInputMode => rotationInputMode;
+    public bool IsOrientationLocked => rotationInputMode == RotationInputMode.Locked;
     public bool IsRotationJoystickValid => latestRotationJoystickValid;
     public Vector2 RotationJoystickInput => latestRotationJoystickValid ? latestRotationJoystick : Vector2.zero;
     public bool IsJoystickRollModifierActive => isJoystickRollModifierActive;
@@ -164,7 +172,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         bool hasPosition = TryReadControllerPosition(positionDevice, out Vector3 positionWorld);
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion rotationWorld);
         bool hasRotationJoystick = TryReadRotationJoystick(rotationDevice, out Vector2 rotationJoystick);
-        bool hasRotationInput = IsJoystickRotationMode() ? hasRotationJoystick : hasRotation;
+        bool hasRotationInput = rotationInputMode == RotationInputMode.Joystick
+            ? hasRotationJoystick
+            : rotationInputMode == RotationInputMode.ControllerPoseDelta && hasRotation;
         IsInputPoseValid = hasPosition || hasRotationInput;
         latestPositionValid = hasPosition;
         latestRotationValid = hasRotation;
@@ -334,6 +344,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private Vector3 CalculateBaseAngularVelocity(Quaternion rotationWorld)
     {
+        if (IsOrientationLocked)
+        {
+            return Vector3.zero;
+        }
+
         if (IsJoystickRotationMode())
         {
             return CalculateBaseAngularVelocityFromJoystick();
@@ -517,6 +532,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             {
                 desiredPosition = workspaceLimiter.ClampWorldPosition(desiredPosition);
             }
+
+            desiredPosition = LimitPreviewLeadToActualTcp(desiredPosition);
         }
 
         if (IsRotationClutched && IsJoystickRotationMode())
@@ -531,10 +548,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         float positionBlend = 1.0f - Mathf.Exp(
             -Mathf.Max(0.0f, previewPositionSmoothingSharpness) * Mathf.Max(0.0001f, deltaTime));
         Vector3 blendedPosition = Vector3.Lerp(tcpPreviewTarget.position, desiredPosition, positionBlend);
+        float previewSpeed = IsFineControlActive
+            ? previewMaxLinearSpeed * Mathf.Clamp01(fineLinearSpeedMultiplier)
+            : previewMaxLinearSpeed;
         Vector3 nextPosition = Vector3.MoveTowards(
             tcpPreviewTarget.position,
             blendedPosition,
-            Mathf.Max(0.0f, previewMaxLinearSpeed) * Mathf.Max(0.0001f, deltaTime));
+            Mathf.Max(0.0f, previewSpeed) * Mathf.Max(0.0001f, deltaTime));
 
         float rotationBlend = 1.0f - Mathf.Exp(
             -Mathf.Max(0.0f, previewRotationSmoothingSharpness) * Mathf.Max(0.0001f, deltaTime));
@@ -584,10 +604,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetRelativePreviewPositionScale()
     {
-        float scale = Mathf.Max(0.0f, relativePreviewPositionScale);
-        return applyFineControlToRelativePreview && IsFineControlActive
-            ? scale * Mathf.Clamp01(fineLinearSpeedMultiplier)
-            : scale;
+        // Never change the position mapping while a grip clutch is held: that
+        // would move the target even when the user keeps the hand still.
+        return Mathf.Max(0.0f, relativePreviewPositionScale);
     }
 
     private float GetRelativePreviewRotationScale()
@@ -596,6 +615,22 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return applyFineControlToRelativePreview && IsFineControlActive
             ? scale * Mathf.Clamp01(fineAngularSpeedMultiplier)
             : scale;
+    }
+
+    private Vector3 LimitPreviewLeadToActualTcp(Vector3 requestedPosition)
+    {
+        if (!limitPreviewLeadToActualTcp
+            || maximumPreviewLeadMeters <= 0.0f
+            || tcpFollower == null
+            || !tcpFollower.enabled)
+        {
+            return requestedPosition;
+        }
+
+        Vector3 actualTcpPosition = tcpFollower.ControlPointPosition;
+        return actualTcpPosition + Vector3.ClampMagnitude(
+            requestedPosition - actualTcpPosition,
+            maximumPreviewLeadMeters);
     }
 
     private Vector3 ApplyAxisLocks(Vector3 value, bool allowX, bool allowY, bool allowZ)
@@ -796,6 +831,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         {
             speedlClient = GetComponent<Ur5UrScriptSpeedlClient>();
         }
+
+        if (tcpFollower == null)
+        {
+            tcpFollower = FindObjectOfType<Ur5TcpTargetFollower>();
+        }
     }
 
     private void OnValidate()
@@ -820,6 +860,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewRotationSmoothingSharpness = Mathf.Max(0.0f, previewRotationSmoothingSharpness);
         previewMaxLinearSpeed = Mathf.Max(0.0f, previewMaxLinearSpeed);
         previewMaxAngularSpeedDegreesPerSecond = Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond);
+        maximumPreviewLeadMeters = Mathf.Max(0.0f, maximumPreviewLeadMeters);
         fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);
         gripPressThreshold = Mathf.Clamp01(gripPressThreshold);

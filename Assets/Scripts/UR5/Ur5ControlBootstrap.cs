@@ -205,8 +205,13 @@ public class Ur5ControlBootstrap : MonoBehaviour
             ? tcpTarget.GetComponent<Quest3TcpTargetController>()
             : null;
         follower.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
+        follower.graspAssist = GetComponent<Ur5GraspAssistController>();
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
-        follower.useGripperPadCenter = false;
+        // The task-space target is the midpoint of the two Robotiq pads,
+        // rather than the wrist flange. This is the point that actually
+        // reaches the object during a grasp.
+        follower.useGripperPadCenter = true;
+        follower.usePadGeometryCenter = true;
         follower.positionTolerance = 0.008f;
         follower.maxJointStepDegrees = 1.45f;
         follower.minimumJointDeltaDegrees = 0.015f;
@@ -235,6 +240,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
         actualMarker.enabled = true;
         actualMarker.follower = follower;
+        actualMarker.hideCommandTargetRenderer = true;
+        actualMarker.markerDiameter = 0.035f;
         return follower;
     }
 
@@ -266,9 +273,9 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // Keep the gripper orientation independent of natural wrist motion while
-        // reaching down.  Rotation is an explicit thumbstick command instead.
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
+        // Standard collection mode: hand motion changes position only. TCP
+        // attitude remains held and the grasp assistant supplies world-down.
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
         velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
@@ -283,9 +290,12 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.relativePreviewRotationScale = 1.80f;
         velocityTeleop.previewMaxLinearSpeed = 0.35f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
+        velocityTeleop.limitPreviewLeadToActualTcp = true;
+        velocityTeleop.maximumPreviewLeadMeters = 0.05f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 28.0f;
-        velocityTeleop.applyFineControlToRelativePreview = true;
+        velocityTeleop.enableFineControlButton = false;
+        velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
         velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
         velocityTeleop.linearSpeedGain = 1.20f;
@@ -357,20 +367,32 @@ public class Ur5ControlBootstrap : MonoBehaviour
         graspAssist.tcpFollower = follower != null
             ? follower
             : robotRoot.GetComponent<Ur5TcpTargetFollower>();
+        if (graspAssist.tcpFollower != null)
+        {
+            graspAssist.tcpFollower.graspAssist = graspAssist;
+        }
         graspAssist.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
         graspAssist.workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
         graspAssist.gripperController = robotRoot.GetComponent<Quest3RobotiqGripperController>();
         graspAssist.autoSelectNearestTarget = true;
-        graspAssist.targetSearchRadius = 0.35f;
+        graspAssist.targetSearchRadius = 0.50f;
         graspAssist.maxAutoTargetSize = 0.35f;
+        graspAssist.startWithPrimaryButton = true;
+        graspAssist.startWithSecondaryButton = true;
         graspAssist.preGraspHeight = 0.12f;
         graspAssist.graspClearance = 0.015f;
         graspAssist.liftHeight = 0.16f;
-        graspAssist.assistMoveSpeed = 0.16f;
+        graspAssist.assistMoveSpeed = 0.10f;
+        graspAssist.assistMoveAcceleration = 0.45f;
         graspAssist.waypointTolerance = 0.012f;
         graspAssist.actualPositionTolerance = 0.025f;
         graspAssist.robotBodyClearanceRadius = 0.075f;
-        graspAssist.preserveCurrentTcpRotation = true;
+        // All grasp stages use the calibrated downward tool attitude instead
+        // of inheriting any transient manual pose.
+        graspAssist.preserveCurrentTcpRotation = false;
+        graspAssist.alignToolForwardAgainstApproachDirection = true;
+        graspAssist.graspYawReferenceWorld = Vector3.zero;
+        graspAssist.fixedTcpRotationEuler = new Vector3(180.0f, 0.0f, 0.0f);
         return graspAssist;
     }
 

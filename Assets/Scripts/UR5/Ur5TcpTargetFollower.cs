@@ -81,6 +81,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Header("Quest Idle Hold")]
     public Quest3TcpTargetController questController;
     public Ur5CartesianVelocityTeleopController velocityTeleop;
+    [Tooltip("Keeps IK active while the scripted PreGrasp -> Grasp -> Lift sequence is moving the TCP target.")]
+    public Ur5GraspAssistController graspAssist;
     public bool pauseIkWhenQuestControllerIdle = true;
     public bool pauseIkWhenVelocityTeleopIdle = true;
     public bool snapTargetToActualPoseWhenQuestReleased = true;
@@ -249,6 +251,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             velocityTeleop = FindObjectOfType<Ur5CartesianVelocityTeleopController>();
         }
 
+        if (graspAssist == null)
+        {
+            graspAssist = FindObjectOfType<Ur5GraspAssistController>();
+        }
+
         if (endEffector == null && robotRoot != null)
         {
             endEffector = FindEndEffector(robotRoot);
@@ -270,6 +277,14 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private bool ShouldPauseForControllerIdle()
     {
+        // The autonomous grasp sequence owns TcpTarget while no hand grip is
+        // necessarily held. Do not snap the target back to the current pose or
+        // pause IK between its pre-grasp, vertical descent, and lift stages.
+        if (graspAssist != null && graspAssist.IsAssistActive)
+        {
+            return false;
+        }
+
         if (pauseIkWhenVelocityTeleopIdle
             && velocityTeleop != null
             && velocityTeleop.enabled)
@@ -689,6 +704,22 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         if (suppressRotationOnlyIkDuringPositionControl)
         {
+            // The grasp assist deliberately supplies a fixed world-down tool
+            // attitude. It must override manual-input suppression even when
+            // the operator has released the controller grip.
+            if (graspAssist != null && graspAssist.IsAssistActive)
+            {
+                return true;
+            }
+
+            // In locked-orientation teleoperation, the controller deliberately
+            // supplies no angular command, but the IK still must preserve the
+            // existing TCP attitude while the user translates it.
+            if (velocityTeleop != null && velocityTeleop.IsOrientationLocked)
+            {
+                return true;
+            }
+
             if (questController != null
                 && questController.IsPositionClutched
                 && !questController.IsRotationClutched)

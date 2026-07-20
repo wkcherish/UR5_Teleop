@@ -107,6 +107,7 @@ public static class Ur5AutoSceneBootstrap
         follower.enabled = true;
         follower.questController = target.GetComponent<Quest3TcpTargetController>();
         follower.velocityTeleop = Object.FindObjectOfType<Ur5CartesianVelocityTeleopController>();
+        follower.graspAssist = Object.FindObjectOfType<Ur5GraspAssistController>();
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
         ApplyStableFollowerDefaults(follower);
 
@@ -118,6 +119,8 @@ public static class Ur5AutoSceneBootstrap
 
         actualMarker.enabled = true;
         actualMarker.follower = follower;
+        actualMarker.hideCommandTargetRenderer = true;
+        actualMarker.markerDiameter = 0.035f;
     }
 
     private static void InstallCartesianVelocityTeleop()
@@ -184,7 +187,8 @@ public static class Ur5AutoSceneBootstrap
 
     private static void ApplyStableFollowerDefaults(Ur5TcpTargetFollower follower)
     {
-        follower.useGripperPadCenter = false;
+        follower.useGripperPadCenter = true;
+        follower.usePadGeometryCenter = true;
         follower.positionTolerance = 0.008f;
         follower.maxJointStepDegrees = 1.45f;
         follower.minimumJointDeltaDegrees = 0.015f;
@@ -221,8 +225,8 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // Do not map incidental wrist rotation to the TCP during a reach.
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
+        // Standard collection mode uses position-only hand control.
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
         velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
@@ -236,9 +240,12 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.relativePreviewRotationScale = 1.80f;
         velocityTeleop.previewMaxLinearSpeed = 0.35f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
+        velocityTeleop.limitPreviewLeadToActualTcp = true;
+        velocityTeleop.maximumPreviewLeadMeters = 0.05f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 28.0f;
-        velocityTeleop.applyFineControlToRelativePreview = true;
+        velocityTeleop.enableFineControlButton = false;
+        velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
         velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
         velocityTeleop.linearSpeedGain = 1.20f;
@@ -295,20 +302,30 @@ public static class Ur5AutoSceneBootstrap
         graspAssist.robotRoot = robotRoot;
         graspAssist.tcpTarget = target.transform;
         graspAssist.tcpFollower = robotRoot.GetComponent<Ur5TcpTargetFollower>();
+        if (graspAssist.tcpFollower != null)
+        {
+            graspAssist.tcpFollower.graspAssist = graspAssist;
+        }
         graspAssist.velocityTeleop = bootstrap.GetComponent<Ur5CartesianVelocityTeleopController>();
         graspAssist.workspaceLimiter = target.GetComponent<TcpTargetWorkspaceLimiter>();
         graspAssist.gripperController = robotRoot.GetComponent<Quest3RobotiqGripperController>();
         graspAssist.autoSelectNearestTarget = true;
-        graspAssist.targetSearchRadius = 0.35f;
+        graspAssist.targetSearchRadius = 0.50f;
         graspAssist.maxAutoTargetSize = 0.35f;
+        graspAssist.startWithPrimaryButton = true;
+        graspAssist.startWithSecondaryButton = true;
         graspAssist.preGraspHeight = 0.12f;
         graspAssist.graspClearance = 0.015f;
         graspAssist.liftHeight = 0.16f;
-        graspAssist.assistMoveSpeed = 0.16f;
+        graspAssist.assistMoveSpeed = 0.10f;
+        graspAssist.assistMoveAcceleration = 0.45f;
         graspAssist.waypointTolerance = 0.012f;
         graspAssist.actualPositionTolerance = 0.025f;
         graspAssist.robotBodyClearanceRadius = 0.075f;
-        graspAssist.preserveCurrentTcpRotation = true;
+        graspAssist.preserveCurrentTcpRotation = false;
+        graspAssist.alignToolForwardAgainstApproachDirection = true;
+        graspAssist.graspYawReferenceWorld = Vector3.zero;
+        graspAssist.fixedTcpRotationEuler = new Vector3(180.0f, 0.0f, 0.0f);
     }
 
     private static void InstallTargetWorkspaceLimiter()

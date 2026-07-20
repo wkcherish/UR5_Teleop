@@ -26,6 +26,8 @@ public class Ur5GraspAssistController : MonoBehaviour
     [Header("Input")]
     public XRNode controllerNode = XRNode.RightHand;
     public bool startWithSecondaryButton = true;
+    [Tooltip("Also accept the primary button so A/B mapping differences on Quest builds cannot block the grasp sequence.")]
+    public bool startWithPrimaryButton = true;
     public KeyCode keyboardStartKey = KeyCode.G;
     public KeyCode keyboardAbortKey = KeyCode.X;
 
@@ -42,13 +44,20 @@ public class Ur5GraspAssistController : MonoBehaviour
     public float graspClearance = 0.015f;
     public float liftHeight = 0.16f;
     public float assistMoveSpeed = 0.16f;
+    [Tooltip("Maximum Cartesian acceleration for each planned segment. This removes abrupt starts/stops without changing the straight-line waypoint path.")]
+    public float assistMoveAcceleration = 0.45f;
     public float assistRotationSpeedDegreesPerSecond = 180.0f;
     public float waypointTolerance = 0.012f;
     public float actualPositionTolerance = 0.025f;
     public float actualRotationToleranceDegrees = 8.0f;
     public float closeGripperSeconds = 0.45f;
     public bool openGripperOnStart = true;
-    public bool preserveCurrentTcpRotation = true;
+    public bool preserveCurrentTcpRotation = false;
+    [Tooltip("For the UR5 tool0 convention, align target.forward against the approach direction. This produces a true world-down grasp instead of relying on a guessed Euler angle.")]
+    public bool alignToolForwardAgainstApproachDirection = true;
+    [Tooltip("Used only to choose the yaw about the vertical grasp axis. Leave zero to use the robot-root forward direction.")]
+    public Vector3 graspYawReferenceWorld = Vector3.zero;
+    [Tooltip("Fallback only when automatic tool-axis alignment is disabled.")]
     public Vector3 fixedTcpRotationEuler = new Vector3(180.0f, 0.0f, 0.0f);
 
     [Header("Safety")]
@@ -87,6 +96,7 @@ public class Ur5GraspAssistController : MonoBehaviour
     private Vector3 graspPosition;
     private Vector3 liftPosition;
     private Quaternion sequenceRotation = Quaternion.identity;
+    private Vector3 assistWorldVelocity;
     private Bounds selectedTargetBounds;
     private bool hasSelectedTargetBounds;
 
@@ -169,6 +179,7 @@ public class Ur5GraspAssistController : MonoBehaviour
         graspClearance = Mathf.Max(0.0f, graspClearance);
         liftHeight = Mathf.Max(0.0f, liftHeight);
         assistMoveSpeed = Mathf.Max(0.0f, assistMoveSpeed);
+        assistMoveAcceleration = Mathf.Max(0.0f, assistMoveAcceleration);
         assistRotationSpeedDegreesPerSecond = Mathf.Max(0.0f, assistRotationSpeedDegreesPerSecond);
         waypointTolerance = Mathf.Max(0.001f, waypointTolerance);
         actualPositionTolerance = Mathf.Max(0.001f, actualPositionTolerance);
@@ -187,6 +198,10 @@ public class Ur5GraspAssistController : MonoBehaviour
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(preGraspPosition, 0.025f);
         Gizmos.DrawLine(preGraspPosition, graspPosition);
+        // Blue arrow is tool0 +Z. During a top-down grasp it must point from
+        // the pre-grasp point toward the object, i.e. world-down.
+        Gizmos.color = Color.blue;
+        Gizmos.DrawRay(preGraspPosition, sequenceRotation * Vector3.forward * 0.10f);
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(graspPosition, 0.020f);
         Gizmos.color = Color.green;
@@ -210,7 +225,9 @@ public class Ur5GraspAssistController : MonoBehaviour
         }
 
         BuildSequenceWaypoints();
-        if (!IsSafeTargetPosition(preGraspPosition) || !IsSafeTargetPosition(graspPosition))
+        if (!IsSafeTargetPosition(preGraspPosition)
+            || !IsSafeTargetPosition(graspPosition)
+            || !IsSafeTargetPosition(liftPosition))
         {
             LogWarning("UR5 grasp assist blocked: planned target pose is too close to robot body.");
             return false;
@@ -241,10 +258,27 @@ public class Ur5GraspAssistController : MonoBehaviour
 
     private void MoveTowardWaypoint(Vector3 waypointPosition, Quaternion waypointRotation, GraspState nextState)
     {
-        Vector3 nextPosition = Vector3.MoveTowards(
-            tcpTarget.position,
-            waypointPosition,
-            Mathf.Max(0.0f, assistMoveSpeed) * Time.fixedDeltaTime);
+        float deltaTime = Mathf.Max(Time.fixedDeltaTime, 0.0001f);
+        Vector3 toWaypoint = waypointPosition - tcpTarget.position;
+        float remainingDistance = toWaypoint.magnitude;
+        float acceleration = Mathf.Max(0.0f, assistMoveAcceleration);
+        float stoppingSpeed = acceleration > 0.0f
+            ? Mathf.Sqrt(2.0f * acceleration * remainingDistance)
+            : Mathf.Max(0.0f, assistMoveSpeed);
+        float desiredSpeed = Mathf.Min(Mathf.Max(0.0f, assistMoveSpeed), stoppingSpeed);
+        Vector3 desiredVelocity = remainingDistance > 0.000001f
+            ? toWaypoint / remainingDistance * desiredSpeed
+            : Vector3.zero;
+
+        assistWorldVelocity = acceleration > 0.0f
+            ? Vector3.MoveTowards(assistWorldVelocity, desiredVelocity, acceleration * deltaTime)
+            : desiredVelocity;
+        Vector3 nextPosition = tcpTarget.position + assistWorldVelocity * deltaTime;
+        if (assistWorldVelocity.magnitude * deltaTime >= remainingDistance)
+        {
+            nextPosition = waypointPosition;
+            assistWorldVelocity = Vector3.zero;
+        }
 
         if (workspaceLimiter != null)
         {
@@ -293,6 +327,9 @@ public class Ur5GraspAssistController : MonoBehaviour
     {
         state = nextState;
         stateTimer = 0.0f;
+        // Each stage starts from rest. In particular, this prevents the
+        // horizontal PreGrasp velocity from leaking into the vertical descent.
+        assistWorldVelocity = Vector3.zero;
         Log("UR5 grasp assist state: " + state);
     }
 
@@ -376,11 +413,49 @@ public class Ur5GraspAssistController : MonoBehaviour
 
         if (bestCollider == null)
         {
-            return false;
+            return TryResolveNearestRendererBounds();
         }
 
         graspTarget = bestCollider.transform;
         selectedTargetBounds = bestCollider.bounds;
+        hasSelectedTargetBounds = true;
+        return true;
+    }
+
+    private bool TryResolveNearestRendererBounds()
+    {
+        Renderer bestRenderer = null;
+        float bestDistanceSquared = float.PositiveInfinity;
+        Renderer[] renderers = FindObjectsOfType<Renderer>();
+        foreach (Renderer candidate in renderers)
+        {
+            if (candidate == null || !candidate.enabled || !IsValidGraspTargetTransform(candidate.transform))
+            {
+                continue;
+            }
+
+            Bounds bounds = candidate.bounds;
+            if (maxAutoTargetSize > 0.0f && bounds.size.magnitude > maxAutoTargetSize)
+            {
+                continue;
+            }
+
+            float distanceSquared = (bounds.center - tcpTarget.position).sqrMagnitude;
+            if (distanceSquared <= targetSearchRadius * targetSearchRadius
+                && distanceSquared < bestDistanceSquared)
+            {
+                bestDistanceSquared = distanceSquared;
+                bestRenderer = candidate;
+            }
+        }
+
+        if (bestRenderer == null)
+        {
+            return false;
+        }
+
+        graspTarget = bestRenderer.transform;
+        selectedTargetBounds = bestRenderer.bounds;
         hasSelectedTargetBounds = true;
         return true;
     }
@@ -442,28 +517,27 @@ public class Ur5GraspAssistController : MonoBehaviour
             return false;
         }
 
-        Transform colliderTransform = collider.transform;
-        if (colliderTransform == tcpTarget || colliderTransform.IsChildOf(tcpTarget))
+        return IsValidGraspTargetTransform(collider.transform)
+            && (maxAutoTargetSize <= 0.0f || collider.bounds.size.magnitude <= maxAutoTargetSize);
+    }
+
+    private bool IsValidGraspTargetTransform(Transform candidateTransform)
+    {
+        if (candidateTransform == null
+            || candidateTransform == tcpTarget
+            || candidateTransform.IsChildOf(tcpTarget)
+            || candidateTransform.name.StartsWith("ActualTcp"))
         {
             return false;
         }
 
-        if (robotRoot != null && colliderTransform.IsChildOf(robotRoot))
+        if (robotRoot != null && candidateTransform.IsChildOf(robotRoot))
         {
             return false;
         }
 
-        if (!string.IsNullOrEmpty(requiredTargetTag) && collider.gameObject.tag != requiredTargetTag)
-        {
-            return false;
-        }
-
-        if (maxAutoTargetSize > 0.0f && collider.bounds.size.magnitude > maxAutoTargetSize)
-        {
-            return false;
-        }
-
-        return true;
+        return string.IsNullOrEmpty(requiredTargetTag)
+            || candidateTransform.gameObject.tag == requiredTargetTag;
     }
 
     private void BuildSequenceWaypoints()
@@ -481,9 +555,36 @@ public class Ur5GraspAssistController : MonoBehaviour
             liftPosition = workspaceLimiter.ClampWorldPosition(liftPosition);
         }
 
-        sequenceRotation = preserveCurrentTcpRotation && tcpTarget != null
-            ? tcpTarget.rotation
-            : Quaternion.Euler(fixedTcpRotationEuler);
+        sequenceRotation = GetSequenceRotation(approachDirection);
+    }
+
+    private Quaternion GetSequenceRotation(Vector3 approachDirection)
+    {
+        if (preserveCurrentTcpRotation && tcpTarget != null)
+        {
+            return tcpTarget.rotation;
+        }
+
+        if (!alignToolForwardAgainstApproachDirection)
+        {
+            return Quaternion.Euler(fixedTcpRotationEuler);
+        }
+
+        // URDF tool0 defines +Z as the tool's forward/approach axis. For a
+        // top-down grasp that axis must point opposite to the world-up approach
+        // direction, i.e. toward the object. Choosing a horizontal reference
+        // also prevents a singular LookRotation when the tool points down.
+        Vector3 toolForwardWorld = -approachDirection.normalized;
+        Vector3 yawReference = graspYawReferenceWorld.sqrMagnitude > 0.0001f
+            ? graspYawReferenceWorld
+            : robotRoot != null ? robotRoot.forward : Vector3.forward;
+        Vector3 toolUpWorld = Vector3.ProjectOnPlane(yawReference, toolForwardWorld);
+        if (toolUpWorld.sqrMagnitude < 0.0001f)
+        {
+            toolUpWorld = Vector3.ProjectOnPlane(Vector3.right, toolForwardWorld);
+        }
+
+        return Quaternion.LookRotation(toolForwardWorld, toolUpWorld.normalized);
     }
 
     private Vector3 GetApproachDirection()
@@ -555,7 +656,7 @@ public class Ur5GraspAssistController : MonoBehaviour
 
     private bool ReadStartButtonPressedThisFrame()
     {
-        if (!startWithSecondaryButton)
+        if (!startWithSecondaryButton && !startWithPrimaryButton)
         {
             return false;
         }
@@ -565,9 +666,15 @@ public class Ur5GraspAssistController : MonoBehaviour
             inputDevice = InputDevices.GetDeviceAtXRNode(controllerNode);
         }
 
-        bool isPressed = inputDevice.isValid
-            && inputDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryPressed)
-            && secondaryPressed;
+        bool secondaryPressed = startWithSecondaryButton
+            && inputDevice.isValid
+            && inputDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryValue)
+            && secondaryValue;
+        bool primaryPressed = startWithPrimaryButton
+            && inputDevice.isValid
+            && inputDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryValue)
+            && primaryValue;
+        bool isPressed = secondaryPressed || primaryPressed;
         bool pressedThisFrame = isPressed && !buttonWasPressed;
         buttonWasPressed = isPressed;
         return pressedThisFrame;
