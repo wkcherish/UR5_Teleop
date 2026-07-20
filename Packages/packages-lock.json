@@ -31,6 +31,13 @@
       },
       "hash": "1056345ab63d9e091a74bfbe3c83e00768499033"
     },
+    "com.meta.xr.sdk.core": {
+      "version": "69.0.0",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {},
+      "url": "https://packages.tuanjie.cn"
+    },
     "com.unity.collab-proxy": {
       "version": "2.12.4",
       "depth": 0,

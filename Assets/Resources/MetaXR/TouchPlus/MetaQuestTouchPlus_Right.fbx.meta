@@ -1,5 +1,5 @@
 fileFormatVersion: 2
-guid: deed68a7fd2e9234899298cf80fae7ad
+guid: 7fdea2cd3c04421fbc7371c879b5841a
 ModelImporter:
   serializedVersion: 21300
   internalIDToNameTable:
@@ -68,17 +68,17 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: batteryIndicator_mat
-    second: {fileID: 2100000, guid: 3abd38e0d18db6c49b2c96961d69d024, type: 2}
+    second: {fileID: 2100000, guid: 61a5e80eabd94611ba7e15cf8f444cf4, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: controllerMATphong
-    second: {fileID: 2100000, guid: 4b13877204bf5394c80dc8b6e469ec13, type: 2}
+    second: {fileID: 2100000, guid: b819832c71b54f79bca12f653bc4d0a8, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: controllerMATphongRT
-    second: {fileID: 2100000, guid: 4b13877204bf5394c80dc8b6e469ec13, type: 2}
+    second: {fileID: 2100000, guid: b819832c71b54f79bca12f653bc4d0a8, type: 2}
   materials:
     materialImportMode: 2
     materialName: 0

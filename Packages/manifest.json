@@ -1,7 +1,9 @@
 {
   "dependencies": {
     "cn.tuanjie.ai.generators": "file:../.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators",
+    "cn.tuanjie.codely.bridge": "1.0.70",
     "cn.unity.uos.launcher": "https://cnb.cool/unity/uos/UOSLauncher.git",
+    "com.meta.xr.sdk.core": "69.0.0",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.feature.development": "1.0.1",
     "com.unity.robotics.urdf-importer": "file:com.unity.robotics.urdf-importer",
@@ -41,7 +43,6 @@
     "com.unity.modules.video": "1.0.0",
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
-    "com.unity.modules.xr": "1.0.0",
-    "cn.tuanjie.codely.bridge": "1.0.70"
+    "com.unity.modules.xr": "1.0.0"
   }
 }
