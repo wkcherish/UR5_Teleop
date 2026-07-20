@@ -2478,6 +2478,14 @@ MonoBehaviour:
   createTcpTargetIfMissing: 1
   enableKeyboardControl: 1
   enableQuest3Control: 1
+  enableTcpTargetFollower: 1
+  enableCartesianVelocityTeleop: 1
+  disablePoseIkWhenVelocityTeleopEnabled: 1
+  addUrScriptSpeedlClient: 1
+  enableQuestUdpShadowTelemetry: 1
+  questShadowReceiverHost: 192.168.10.251
+  questShadowReceiverPort: 8080
+  questShadowSendRateHz: 72
 --- !u!1 &218261879
 GameObject:
   m_ObjectHideFlags: 0
