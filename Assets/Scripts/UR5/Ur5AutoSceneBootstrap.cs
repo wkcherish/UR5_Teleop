@@ -238,6 +238,9 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.invertJoystickPitch = false;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
+        velocityTeleop.filterControllerPosition = true;
+        velocityTeleop.controllerPositionJitterDeadbandMeters = 0.0025f;
+        velocityTeleop.controllerPositionFilterSharpness = 16.0f;
         velocityTeleop.linearDeadbandMeters = 0.005f;
         velocityTeleop.angularDeadbandDegrees = 2.5f;
         velocityTeleop.relativePreviewPositionScale = 2.40f;
@@ -245,11 +248,13 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.previewMaxLinearSpeed = 0.35f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
         velocityTeleop.limitPreviewLeadToActualTcp = true;
-        velocityTeleop.maximumPreviewLeadMeters = 0.05f;
+        velocityTeleop.maximumPreviewLeadMeters = 0.025f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
         velocityTeleop.snapGraspApproachToVertical = true;
         velocityTeleop.verticalApproachSnapDegrees = 32.0f;
+        velocityTeleop.enableLeftPrimarySnapDown = true;
+        velocityTeleop.enableLeftSecondaryOrientationHold = true;
         velocityTeleop.enableFineControlButton = false;
         velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;

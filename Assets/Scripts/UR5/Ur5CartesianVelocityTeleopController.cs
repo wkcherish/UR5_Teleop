@@ -32,6 +32,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Tooltip("Locked is the pick-and-place default: translation is tracked while the TCP attitude is held. Joystick and controller-pose modes are optional Inspector-only modes for special tasks.")]
     public RotationInputMode rotationInputMode = RotationInputMode.Locked;
 
+    [Header("Right Controller Position Stabilization")]
+    [Tooltip("Filters millimetre-level Quest controller jitter before it can move the TCP target. This affects only the right-hand Cartesian command, never joint-state recording.")]
+    public bool filterControllerPosition = true;
+    [Tooltip("Small controller-position changes below this radius are treated as tracking noise.")]
+    public float controllerPositionJitterDeadbandMeters = 0.0025f;
+    [Tooltip("Higher values respond faster to intentional hand motion; 16 keeps normal movement responsive while removing idle jitter.")]
+    public float controllerPositionFilterSharpness = 16.0f;
+
     [Header("Velocity Mapping")]
     [Tooltip("Meters/second generated per meter of right-hand displacement from the clutch origin.")]
     public float linearSpeedGain = 1.20f;
@@ -94,10 +102,16 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool snapGraspApproachToVertical = true;
     [Range(1.0f, 89.0f)] public float verticalApproachSnapDegrees = 32.0f;
 
+    [Header("Left Controller Safety Pose")]
+    [Tooltip("Press X on the left controller once to align the physical grasp axis with world down.")]
+    public bool enableLeftPrimarySnapDown = true;
+    [Tooltip("Hold Y on the left controller to freeze the current TCP orientation while the right hand translates.")]
+    public bool enableLeftSecondaryOrientationHold = true;
+
     [Header("Actual TCP Lead Limit")]
     [Tooltip("Prevents the IK command target from running far ahead of the real two-pad TCP when the hand moves faster than the arm can track.")]
     public bool limitPreviewLeadToActualTcp = true;
-    public float maximumPreviewLeadMeters = 0.05f;
+    public float maximumPreviewLeadMeters = 0.025f;
 
     [Header("Grip Hysteresis")]
     [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
@@ -127,6 +141,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 positionClutchStartTargetWorldPosition;
     private Quaternion rotationClutchStartTargetWorldRotation;
     private Quaternion rotationClutchStartGraspWorldRotation;
+    private Vector3 filteredControllerPositionWorld;
+    private bool hasFilteredControllerPosition;
+    private bool controllerPositionFilterIsSettling;
     private Vector3 latestPositionWorld;
     private Quaternion latestRotationWorld = Quaternion.identity;
     private bool latestPositionValid;
@@ -141,6 +158,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 filteredBaseLinearVelocity;
     private Vector3 filteredBaseAngularVelocity;
     private Ur5TcpTargetFollower tcpFollower;
+    private bool leftPrimaryWasPressed;
+    private bool leftSecondaryWasPressed;
+    private bool hasPersistentOrientationTarget;
+    private Quaternion persistentOrientationTarget = Quaternion.identity;
 
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
@@ -155,6 +176,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 BaseAngularVelocity => filteredBaseAngularVelocity;
     public RotationInputMode CurrentRotationInputMode => rotationInputMode;
     public bool IsOrientationLocked => rotationInputMode == RotationInputMode.Locked;
+    public bool IsSafetyOrientationHoldActive { get; private set; }
     public bool IsRotationJoystickValid => latestRotationJoystickValid;
     public Vector2 RotationJoystickInput => latestRotationJoystickValid ? latestRotationJoystick : Vector2.zero;
     public bool IsJoystickRollModifierActive => isJoystickRollModifierActive;
@@ -176,6 +198,16 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         RefreshDevicesIfNeeded();
 
         bool hasPosition = TryReadControllerPosition(positionDevice, out Vector3 positionWorld);
+        if (hasPosition)
+        {
+            positionWorld = FilterControllerPosition(positionWorld, Time.deltaTime);
+        }
+        else
+        {
+            hasFilteredControllerPosition = false;
+            controllerPositionFilterIsSettling = false;
+        }
+
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion rotationWorld);
         bool hasRotationJoystick = TryReadRotationJoystick(rotationDevice, out Vector2 rotationJoystick);
         bool hasRotationInput = rotationInputMode == RotationInputMode.Joystick
@@ -204,10 +236,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && useSecondaryButtonForJoystickRoll
             && ReadSecondaryButton(rotationDevice);
 
+        UpdateLeftControllerSafetyPose();
+
         IsPositionClutched = hasPosition
             && (!usePositionGripAsDeadman || ReadGripDeadman(positionDevice, ref positionGripLatched));
         IsRotationClutched = hasRotationInput
             && (!useRotationGripAsDeadman || ReadGripDeadman(rotationDevice, ref rotationGripLatched));
+        if (IsRotationClutched
+            && !wasRotationClutched
+            && !IsSafetyOrientationHoldActive
+            && !leftPrimaryWasPressed)
+        {
+            hasPersistentOrientationTarget = false;
+        }
         IsFineControlActive =
             (IsPositionClutched && ReadFineControl(positionDevice))
             || (IsRotationClutched && ReadFineControl(rotationDevice));
@@ -245,6 +286,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         limitedBaseAngularVelocity = Vector3.zero;
         filteredBaseLinearVelocity = Vector3.zero;
         filteredBaseAngularVelocity = Vector3.zero;
+        hasFilteredControllerPosition = false;
+        controllerPositionFilterIsSettling = false;
 
         if (speedlClient != null)
         {
@@ -294,7 +337,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         rawBaseLinearVelocity = IsPositionClutched
             ? CalculateBaseLinearVelocity(positionWorld)
             : Vector3.zero;
-        rawBaseAngularVelocity = IsRotationClutched
+        rawBaseAngularVelocity = IsRotationClutched && !IsSafetyOrientationHoldActive
             ? CalculateBaseAngularVelocity(rotationWorld)
             : Vector3.zero;
     }
@@ -545,7 +588,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             desiredPosition = LimitPreviewLeadToActualTcp(desiredPosition);
         }
 
-        if (IsRotationClutched && IsJoystickRotationMode())
+        if (hasPersistentOrientationTarget)
+        {
+            desiredRotation = persistentOrientationTarget;
+        }
+        else if (IsRotationClutched && IsJoystickRotationMode())
         {
             desiredRotation = CalculateJoystickPreviewRotation(tcpPreviewTarget.rotation, deltaTime);
         }
@@ -635,6 +682,45 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return Quaternion.LookRotation(snappedApproach, jawUp.normalized);
     }
 
+    private void UpdateLeftControllerSafetyPose()
+    {
+        if (rotationControllerNode != XRNode.LeftHand
+            || !rotationDevice.isValid
+            || tcpPreviewTarget == null)
+        {
+            leftPrimaryWasPressed = false;
+            leftSecondaryWasPressed = false;
+            IsSafetyOrientationHoldActive = false;
+            return;
+        }
+
+        bool primaryPressed = enableLeftPrimarySnapDown
+            && rotationDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryValue)
+            && primaryValue;
+        bool secondaryPressed = enableLeftSecondaryOrientationHold
+            && rotationDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryValue)
+            && secondaryValue;
+
+        if (primaryPressed && !leftPrimaryWasPressed)
+        {
+            Vector3 yawReference = robotBaseFrame != null ? robotBaseFrame.forward : Vector3.forward;
+            persistentOrientationTarget = tcpFollower != null
+                ? tcpFollower.GetToolRotationForGraspApproach(Vector3.down, yawReference)
+                : tcpPreviewTarget.rotation;
+            hasPersistentOrientationTarget = true;
+        }
+
+        if (secondaryPressed && !leftSecondaryWasPressed)
+        {
+            persistentOrientationTarget = tcpPreviewTarget.rotation;
+            hasPersistentOrientationTarget = true;
+        }
+
+        IsSafetyOrientationHoldActive = secondaryPressed;
+        leftPrimaryWasPressed = primaryPressed;
+        leftSecondaryWasPressed = secondaryPressed;
+    }
+
     private Quaternion CalculateJoystickPreviewRotation(Quaternion currentRotation, float deltaTime)
     {
         Vector3 worldAngularVelocity = BaseDirectionToWorld(filteredBaseAngularVelocity);
@@ -698,6 +784,58 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         return value.normalized * (magnitude - Mathf.Max(0.0f, deadband));
+    }
+
+    private Vector3 FilterControllerPosition(Vector3 rawPosition, float deltaTime)
+    {
+        if (!filterControllerPosition)
+        {
+            filteredControllerPositionWorld = rawPosition;
+            hasFilteredControllerPosition = true;
+            controllerPositionFilterIsSettling = false;
+            return rawPosition;
+        }
+
+        if (!hasFilteredControllerPosition)
+        {
+            filteredControllerPositionWorld = rawPosition;
+            hasFilteredControllerPosition = true;
+            controllerPositionFilterIsSettling = false;
+            return filteredControllerPositionWorld;
+        }
+
+        Vector3 inputDelta = rawPosition - filteredControllerPositionWorld;
+        float jitterRadius = Mathf.Max(0.0f, controllerPositionJitterDeadbandMeters);
+        if (inputDelta.sqrMagnitude > jitterRadius * jitterRadius)
+        {
+            controllerPositionFilterIsSettling = true;
+        }
+
+        if (!controllerPositionFilterIsSettling)
+        {
+            // Keep the last accepted pose completely still while the Quest
+            // reports its normal idle-position noise.
+            return filteredControllerPositionWorld;
+        }
+
+        float blend = 1.0f - Mathf.Exp(
+            -Mathf.Max(0.0f, controllerPositionFilterSharpness) * Mathf.Max(0.0001f, deltaTime));
+        filteredControllerPositionWorld = Vector3.Lerp(
+            filteredControllerPositionWorld,
+            rawPosition,
+            blend);
+
+        // Once a deliberate movement begins, let it converge all the way to
+        // the new hand pose. Without this state, a small intentional motion
+        // can get stranded part way through the jitter deadband.
+        float settleDistance = Mathf.Min(0.00025f, jitterRadius * 0.1f);
+        if (inputDelta.sqrMagnitude <= settleDistance * settleDistance)
+        {
+            filteredControllerPositionWorld = rawPosition;
+            controllerPositionFilterIsSettling = false;
+        }
+
+        return filteredControllerPositionWorld;
     }
 
     private Vector2 ApplyJoystickDeadband(Vector2 value, float deadband)
@@ -891,6 +1029,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         linearSpeedGain = Mathf.Max(0.0f, linearSpeedGain);
         maxLinearSpeed = Mathf.Max(0.0f, maxLinearSpeed);
         linearDeadbandMeters = Mathf.Max(0.0f, linearDeadbandMeters);
+        controllerPositionJitterDeadbandMeters = Mathf.Max(0.0f, controllerPositionJitterDeadbandMeters);
+        controllerPositionFilterSharpness = Mathf.Max(0.0f, controllerPositionFilterSharpness);
         angularSpeedGain = Mathf.Max(0.0f, angularSpeedGain);
         maxAngularSpeedRadiansPerSecond = Mathf.Max(0.0f, maxAngularSpeedRadiansPerSecond);
         angularDeadbandDegrees = Mathf.Max(0.0f, angularDeadbandDegrees);

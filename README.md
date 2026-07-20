@@ -31,11 +31,13 @@ Quest 3 手柄
 - 右手 grip：移动两片 Robotiq 指腹中心的 TCP。
 - 左手 grip：用相对四元数控制夹爪姿态。上/下转动左手可连续改变夹爪朝上或朝下；右手平移不会串入姿态控制。
 - 当夹爪接近朝上或朝下（默认 32° 范围）时，系统自动吸附为精确竖直姿态，同时保留夹爪开口的水平朝向；之后右手移动会优先保持该姿态。
+- 左手 X：一键将真实夹爪轴自动校准为竖直朝下。左手 Y（按住）：冻结当前夹爪姿态；此时右手 grip 只控制平移，适合稳定地下探。
+- 右手位置输入在静止时会自动抑制约 `2.5 mm` 的 Quest 跟踪噪声；这只冻结 TCP 命令的微小漂移，不会屏蔽任何机械臂关节状态或数据采集。
 - 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
 - 右手 A 或 B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。两键均可用，避免 Quest 构建中的 A/B 映射差异。
 - 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
 - 抓取姿态不再假设 `tool0` 的轴向：运行时由“Robotiq 基座 → 两指中心”建立真实抓取坐标系，再标定到导入后的工具坐标系。
-- 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.05m`。
+- 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.025m`。
 
 ## 抓取辅助
 
@@ -77,7 +79,7 @@ Quest 3 手柄
 6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
 7. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
 8. 抓取辅助默认以 `0.10 m/s`、`0.45 m/s²` 在预抓取、下探和抬升三段间插补。若需要更快，先提高 `assistMoveSpeed`，再谨慎提高 `assistMoveAcceleration`。
-9. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
+9. 如果右手静止时仍有小幅抖动，先把 `controllerPositionJitterDeadbandMeters` 从 `0.0025` 提高到 `0.0035`；不要先提高 `linearDeadbandMeters`，后者只作用于 grip 起点附近。
 10. A/B 已保留给抓取辅助；如果普通移动太灵敏，降低 `relativePreviewPositionScale`。
 
 ## 真机扩展策略
