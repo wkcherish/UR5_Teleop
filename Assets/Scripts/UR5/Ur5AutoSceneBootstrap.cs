@@ -355,6 +355,10 @@ public static class Ur5AutoSceneBootstrap
         }
 
         workspaceLimiter.robotRoot = robotRoot;
+        workspaceLimiter.minimumLocalPosition = new Vector3(
+            workspaceLimiter.minimumLocalPosition.x,
+            0.05f,
+            workspaceLimiter.minimumLocalPosition.z);
 
         TcpTargetCollisionGuard collisionGuard = target.GetComponent<TcpTargetCollisionGuard>();
         if (collisionGuard == null)

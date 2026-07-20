@@ -121,6 +121,12 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         workspaceLimiter.robotRoot = robotRoot;
+        // Keep a small clearance above the calibrated base/ground plane while
+        // still allowing the Robotiq pads to reach low tabletop targets.
+        workspaceLimiter.minimumLocalPosition = new Vector3(
+            workspaceLimiter.minimumLocalPosition.x,
+            0.05f,
+            workspaceLimiter.minimumLocalPosition.z);
 
         TcpTargetCollisionGuard collisionGuard = tcpTarget.GetComponent<TcpTargetCollisionGuard>();
         if (collisionGuard == null)

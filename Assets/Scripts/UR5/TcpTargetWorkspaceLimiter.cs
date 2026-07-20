@@ -9,7 +9,7 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
     public bool preserveInitialTargetPose = true;
 
     [Header("Workspace Relative To UR5 Base")]
-    public Vector3 minimumLocalPosition = new Vector3(-0.70f, 0.08f, -0.70f);
+    public Vector3 minimumLocalPosition = new Vector3(-0.70f, 0.05f, -0.70f);
     public Vector3 maximumLocalPosition = new Vector3(0.70f, 0.85f, 0.70f);
 
     [Header("Base Keep-Out")]
