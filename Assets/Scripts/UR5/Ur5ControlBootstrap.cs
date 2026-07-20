@@ -18,6 +18,14 @@ public class Ur5ControlBootstrap : MonoBehaviour
     public bool disablePoseIkWhenVelocityTeleopEnabled = false;
     public bool addUrScriptSpeedlClient = true;
 
+    [Header("Quest UDP Shadow Telemetry")]
+    [Tooltip("Sends raw Quest controller telemetry to the DG-VLA PC for read-only shadow logging. This never enables or commands the real robot.")]
+    public bool enableQuestUdpShadowTelemetry;
+    [Tooltip("IP address of the DG-VLA capture computer. Leave empty to keep telemetry disabled safely.")]
+    public string questShadowReceiverHost = "";
+    public int questShadowReceiverPort = 8080;
+    public float questShadowSendRateHz = 72.0f;
+
     private void Awake()
     {
         if (robotRoot == null)
@@ -57,6 +65,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         Ur5ArticulationJointController jointController = ResolveJointController();
         Ur5JointTrajectoryPlayer trajectoryPlayer = ConfigureJointTrajectoryPlayer(jointController);
         ConfigureVelocityTeleop(useVelocityTeleop);
+        ConfigureQuestUdpShadowTelemetry();
 
         Ur5TcpTargetFollower follower = null;
         bool disablePoseIkForThisRun = useVelocityTeleop
@@ -347,6 +356,31 @@ public class Ur5ControlBootstrap : MonoBehaviour
     {
         Ur5UrScriptSpeedlClient speedlClient = GetComponent<Ur5UrScriptSpeedlClient>();
         return speedlClient != null && speedlClient.enableRealRobotOutput;
+    }
+
+    private void ConfigureQuestUdpShadowTelemetry()
+    {
+        Quest3UdpTeleopSender sender = GetComponent<Quest3UdpTeleopSender>();
+        if (!enableQuestUdpShadowTelemetry)
+        {
+            if (sender != null)
+            {
+                sender.sendPackets = false;
+            }
+
+            return;
+        }
+
+        if (sender == null)
+        {
+            sender = gameObject.AddComponent<Quest3UdpTeleopSender>();
+        }
+
+        sender.receiverHost = questShadowReceiverHost;
+        sender.receiverPort = questShadowReceiverPort;
+        sender.sendRateHz = questShadowSendRateHz;
+        // 此处仅打开 Quest -> PC 遥测，不关联 Ur5UrScriptSpeedlClient。
+        sender.sendPackets = true;
     }
 
     private void ConfigureGripperController()

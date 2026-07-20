@@ -40,6 +40,24 @@ Quest 3 手柄
 - 抓取姿态不再假设 `tool0` 的轴向：运行时由“Robotiq 基座 → 两指中心”建立真实抓取坐标系，再标定到导入后的工具坐标系。
 - 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.025m`。
 
+## Quest → PC 影子遥测（尚不控制真机）
+
+`Quest3UdpTeleopSender` 会把右手控制器在 Quest tracking frame 下的原始位姿、Grip、Trigger
+和单调递增序号以 UDP JSON 发送到 DG-VLA 采集电脑。它不会连接 UR 控制柜、不会发送
+URScript，也不会开启 `Ur5UrScriptSpeedlClient.enableRealRobotOutput`。
+
+使用前，在 `Ur5ControlBootstrap` Inspector 中：
+
+1. 填写 `questShadowReceiverHost` 为运行 DG-VLA 的电脑 IP；端口默认 `8080`。
+2. 勾选 `enableQuestUdpShadowTelemetry`，保持 `enableRealRobotOutput = false`。
+3. Quest Build & Run 后，PC 运行 DG-VLA 的 `shadow_teleop_ur5_quest3.py` 查看只读影子日志。
+
+Quest Android 构建需允许互联网访问（Unity Player Settings 的 Internet Access 设为 `Require`
+或确认其 `Auto` 配置已写入网络权限），否则 UDP 包无法离开头显。
+
+初期不要启用 `sendPrimaryButtonAsRecenter` 或 `sendSecondaryButtonAsStopEpisode`，因为 A/B
+当前仍用于 Unity 抓取辅助。UDP 只保留最新序号数据，丢失或乱序包不会被重放。
+
 ## 抓取辅助
 
 `Ur5GraspAssistController` 将 GitHub Pick-and-Place 的抓取分段迁移到当前非 ROS 控制链：
