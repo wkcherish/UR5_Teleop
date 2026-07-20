@@ -15,14 +15,17 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     [Header("Quest Input")]
     public XRNode controllerNode = XRNode.RightHand;
     public bool useTrigger = true;
+    [Range(0.0f, 0.25f)] public float triggerDeadband = 0.04f;
+    public float triggerSmoothingSharpness = 22.0f;
 
     [Header("Gripper Motion")]
     [Range(0.0f, 1.0f)] public float targetCloseAmount;
     public float closedAngleDegrees = 51.5662f;
-    public float closeSpeedPerSecond = 2.0f;
+    public float closeSpeedPerSecond = 2.60f;
+    public float openSpeedPerSecond = 3.20f;
     public float stiffness = 8000.0f;
-    public float damping = 200.0f;
-    public float forceLimit = 100.0f;
+    public float damping = 450.0f;
+    public float forceLimit = 160.0f;
 
     private ArticulationBody leftDriver;
     private ArticulationBody rightDriver;
@@ -32,6 +35,7 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     private ArticulationBody rightFollower;
     private InputDevice controllerDevice;
     private float currentCloseAmount;
+    private float filteredTriggerAmount;
 
     public float CloseAmount => currentCloseAmount;
 
@@ -49,18 +53,52 @@ public class Quest3RobotiqGripperController : MonoBehaviour
             if (controllerDevice.isValid
                 && controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float triggerAmount))
             {
-                targetCloseAmount = Mathf.Clamp01(triggerAmount);
+                float desiredTriggerAmount = ApplyTriggerDeadband(triggerAmount);
+                filteredTriggerAmount = SmoothScalar(
+                    filteredTriggerAmount,
+                    desiredTriggerAmount,
+                    triggerSmoothingSharpness,
+                    Time.deltaTime);
+                targetCloseAmount = filteredTriggerAmount;
             }
         }
 
         if (Input.GetKey(KeyCode.O)) targetCloseAmount = 0.0f;
         if (Input.GetKey(KeyCode.P)) targetCloseAmount = 1.0f;
+    }
 
+    private void FixedUpdate()
+    {
+        float speed = targetCloseAmount >= currentCloseAmount
+            ? closeSpeedPerSecond
+            : openSpeedPerSecond;
         currentCloseAmount = Mathf.MoveTowards(
             currentCloseAmount,
             targetCloseAmount,
-            closeSpeedPerSecond * Time.deltaTime);
+            Mathf.Max(0.0f, speed) * Time.fixedDeltaTime);
         ApplyCloseAmount(currentCloseAmount);
+    }
+
+    public void SetTargetCloseAmount(float closeAmount)
+    {
+        targetCloseAmount = Mathf.Clamp01(closeAmount);
+        filteredTriggerAmount = targetCloseAmount;
+    }
+
+    public void OpenGripper()
+    {
+        SetTargetCloseAmount(0.0f);
+    }
+
+    public void CloseGripper()
+    {
+        SetTargetCloseAmount(1.0f);
+    }
+
+    public void ApplyConfiguredDriveSettings()
+    {
+        ResolveJoints();
+        ConfigureDrives();
     }
 
     private void ResolveJoints()
@@ -154,6 +192,37 @@ public class Quest3RobotiqGripperController : MonoBehaviour
         {
             controllerDevice = InputDevices.GetDeviceAtXRNode(controllerNode);
         }
+    }
+
+    private float ApplyTriggerDeadband(float triggerAmount)
+    {
+        float clamped = Mathf.Clamp01(triggerAmount);
+        float deadband = Mathf.Clamp01(triggerDeadband);
+        if (clamped <= deadband)
+        {
+            return 0.0f;
+        }
+
+        return Mathf.InverseLerp(deadband, 1.0f, clamped);
+    }
+
+    private float SmoothScalar(float current, float target, float sharpness, float deltaTime)
+    {
+        float blend = 1.0f - Mathf.Exp(-Mathf.Max(0.0f, sharpness) * Mathf.Max(0.0001f, deltaTime));
+        return Mathf.Lerp(current, target, blend);
+    }
+
+    private void OnValidate()
+    {
+        triggerDeadband = Mathf.Clamp(triggerDeadband, 0.0f, 0.25f);
+        triggerSmoothingSharpness = Mathf.Max(0.0f, triggerSmoothingSharpness);
+        targetCloseAmount = Mathf.Clamp01(targetCloseAmount);
+        closedAngleDegrees = Mathf.Max(0.0f, closedAngleDegrees);
+        closeSpeedPerSecond = Mathf.Max(0.0f, closeSpeedPerSecond);
+        openSpeedPerSecond = Mathf.Max(0.0f, openSpeedPerSecond);
+        stiffness = Mathf.Max(0.0f, stiffness);
+        damping = Mathf.Max(0.0f, damping);
+        forceLimit = Mathf.Max(0.0f, forceLimit);
     }
 
     private ArticulationBody FindArticulationBody(string objectName)

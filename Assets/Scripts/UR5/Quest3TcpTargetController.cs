@@ -19,7 +19,7 @@ public class Quest3TcpTargetController : MonoBehaviour
     [Header("Controllers")]
     [FormerlySerializedAs("controllerNode")]
     public XRNode positionControllerNode = XRNode.RightHand;
-    public XRNode rotationControllerNode = XRNode.LeftHand;
+    public XRNode rotationControllerNode = XRNode.RightHand;
     [FormerlySerializedAs("useGripAsClutch")]
     public bool usePositionGripAsClutch = true;
     public bool useRotationGripAsClutch = true;

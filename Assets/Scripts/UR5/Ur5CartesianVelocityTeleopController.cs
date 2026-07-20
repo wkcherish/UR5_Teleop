@@ -10,6 +10,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         VelocityIntegration
     }
 
+    public enum RotationInputMode
+    {
+        Joystick,
+        ControllerPoseDelta
+    }
+
     [Header("References")]
     public Transform robotBaseFrame;
     public Transform xrOrigin;
@@ -19,9 +25,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     [Header("Controllers")]
     public XRNode positionControllerNode = XRNode.RightHand;
-    public XRNode rotationControllerNode = XRNode.LeftHand;
+    public XRNode rotationControllerNode = XRNode.RightHand;
     public bool usePositionGripAsDeadman = true;
     public bool useRotationGripAsDeadman = true;
+    public RotationInputMode rotationInputMode = RotationInputMode.ControllerPoseDelta;
 
     [Header("Velocity Mapping")]
     [Tooltip("Meters/second generated per meter of right-hand displacement from the clutch origin.")]
@@ -31,8 +38,22 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     [Tooltip("Radians/second generated per radian of left-hand rotation from the clutch orientation.")]
     public float angularSpeedGain = 1.30f;
-    public float maxAngularSpeedRadiansPerSecond = 0.85f;
+    public float maxAngularSpeedRadiansPerSecond = 4.00f;
     public float angularDeadbandDegrees = 1.2f;
+
+    [Header("Joystick Rotation")]
+    [Tooltip("Deadband for the left thumbstick rotation mode.")]
+    public float rotationJoystickDeadband = 0.12f;
+    [Tooltip("Left stick X. Positive turns the TCP around the robot base Y axis.")]
+    public float joystickYawSpeedDegreesPerSecond = 220.0f;
+    [Tooltip("Left stick Y. Positive pitches the TCP around the robot base X axis.")]
+    public float joystickPitchSpeedDegreesPerSecond = 180.0f;
+    [Tooltip("Hold the left secondary button and use stick X for TCP roll around the robot base Z axis.")]
+    public bool useSecondaryButtonForJoystickRoll = true;
+    public float joystickRollSpeedDegreesPerSecond = 200.0f;
+    public bool invertJoystickPitch = false;
+    [Tooltip("When the joystick returns to deadband, stop angular preview immediately instead of coasting through the velocity filter.")]
+    public bool snapJoystickRotationToZeroInDeadband = true;
 
     [Header("Axis Locks")]
     public bool allowBaseX = true;
@@ -45,7 +66,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Header("Filtering And Limits")]
     public float commandSmoothingSharpness = 22.0f;
     public float maxLinearAcceleration = 0.40f;
-    public float maxAngularAcceleration = 2.20f;
+    public float maxAngularAcceleration = 10.00f;
     public bool snapToZeroOnRelease = true;
 
     [Header("Workspace Guard")]
@@ -64,7 +85,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float previewPositionSmoothingSharpness = 26.0f;
     public float previewRotationSmoothingSharpness = 28.0f;
     public float previewMaxLinearSpeed = 0.35f;
-    public float previewMaxAngularSpeedDegreesPerSecond = 300.0f;
+    public float previewMaxAngularSpeedDegreesPerSecond = 420.0f;
 
     [Header("Grip Hysteresis")]
     [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
@@ -97,6 +118,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Quaternion latestRotationWorld = Quaternion.identity;
     private bool latestPositionValid;
     private bool latestRotationValid;
+    private Vector2 latestRotationJoystick;
+    private bool latestRotationJoystickValid;
+    private bool isJoystickRollModifierActive;
     private Vector3 rawBaseLinearVelocity;
     private Vector3 rawBaseAngularVelocity;
     private Vector3 limitedBaseLinearVelocity;
@@ -115,6 +139,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 RawBaseAngularVelocity => rawBaseAngularVelocity;
     public Vector3 BaseLinearVelocity => filteredBaseLinearVelocity;
     public Vector3 BaseAngularVelocity => filteredBaseAngularVelocity;
+    public RotationInputMode CurrentRotationInputMode => rotationInputMode;
+    public bool IsRotationJoystickValid => latestRotationJoystickValid;
+    public Vector2 RotationJoystickInput => latestRotationJoystickValid ? latestRotationJoystick : Vector2.zero;
+    public bool IsJoystickRollModifierActive => isJoystickRollModifierActive;
 
     private void Awake()
     {
@@ -134,9 +162,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         bool hasPosition = TryReadControllerPosition(positionDevice, out Vector3 positionWorld);
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion rotationWorld);
-        IsInputPoseValid = hasPosition || hasRotation;
+        bool hasRotationJoystick = TryReadRotationJoystick(rotationDevice, out Vector2 rotationJoystick);
+        bool hasRotationInput = IsJoystickRotationMode() ? hasRotationJoystick : hasRotation;
+        IsInputPoseValid = hasPosition || hasRotationInput;
         latestPositionValid = hasPosition;
         latestRotationValid = hasRotation;
+        latestRotationJoystickValid = hasRotationJoystick;
         if (hasPosition)
         {
             latestPositionWorld = positionWorld;
@@ -147,9 +178,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             latestRotationWorld = rotationWorld;
         }
 
+        if (hasRotationJoystick)
+        {
+            latestRotationJoystick = rotationJoystick;
+        }
+
+        isJoystickRollModifierActive = IsJoystickRotationMode()
+            && useSecondaryButtonForJoystickRoll
+            && ReadSecondaryButton(rotationDevice);
+
         IsPositionClutched = hasPosition
             && (!usePositionGripAsDeadman || ReadGripDeadman(positionDevice, ref positionGripLatched));
-        IsRotationClutched = hasRotation
+        IsRotationClutched = hasRotationInput
             && (!useRotationGripAsDeadman || ReadGripDeadman(rotationDevice, ref rotationGripLatched));
         IsFineControlActive =
             (IsPositionClutched && ReadFineControl(positionDevice))
@@ -258,6 +298,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
+        bool shouldSnapJoystickRotation =
+            IsJoystickRotationMode()
+            && snapJoystickRotationToZeroInDeadband
+            && rawBaseAngularVelocity.sqrMagnitude < 0.00000001f;
+
         filteredBaseLinearVelocity = FilterVelocity(
             filteredBaseLinearVelocity,
             limitedBaseLinearVelocity,
@@ -268,6 +313,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             limitedBaseAngularVelocity,
             maxAngularAcceleration,
             deltaTime);
+
+        if (shouldSnapJoystickRotation)
+        {
+            filteredBaseAngularVelocity = Vector3.zero;
+        }
     }
 
     private Vector3 CalculateBaseLinearVelocity(Vector3 positionWorld)
@@ -283,6 +333,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private Vector3 CalculateBaseAngularVelocity(Quaternion rotationWorld)
     {
+        if (IsJoystickRotationMode())
+        {
+            return CalculateBaseAngularVelocityFromJoystick();
+        }
+
         Quaternion rotationDelta = rotationWorld * Quaternion.Inverse(rotationNeutralWorldRotation);
         rotationDelta.ToAngleAxis(out float angleDegrees, out Vector3 worldAxis);
         if (angleDegrees > 180.0f)
@@ -304,6 +359,37 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             ? maxAngularSpeedRadiansPerSecond * Mathf.Clamp01(fineAngularSpeedMultiplier)
             : maxAngularSpeedRadiansPerSecond;
         return Vector3.ClampMagnitude(angularVelocity, Mathf.Max(0.0f, angularSpeedLimit));
+    }
+
+    private Vector3 CalculateBaseAngularVelocityFromJoystick()
+    {
+        Vector2 joystick = latestRotationJoystickValid
+            ? ApplyJoystickDeadband(latestRotationJoystick, rotationJoystickDeadband)
+            : Vector2.zero;
+        if (joystick.sqrMagnitude < 0.000001f)
+        {
+            return Vector3.zero;
+        }
+
+        float fineMultiplier = IsFineControlActive
+            ? Mathf.Clamp01(fineAngularSpeedMultiplier)
+            : 1.0f;
+        float yawRadiansPerSecond = joystick.x * joystickYawSpeedDegreesPerSecond * Mathf.Deg2Rad * fineMultiplier;
+        float pitchInput = invertJoystickPitch ? -joystick.y : joystick.y;
+        float pitchRadiansPerSecond = pitchInput * joystickPitchSpeedDegreesPerSecond * Mathf.Deg2Rad * fineMultiplier;
+        float rollRadiansPerSecond = 0.0f;
+
+        if (isJoystickRollModifierActive)
+        {
+            rollRadiansPerSecond = joystick.x * joystickRollSpeedDegreesPerSecond * Mathf.Deg2Rad * fineMultiplier;
+            yawRadiansPerSecond = 0.0f;
+        }
+
+        Vector3 baseAngularVelocity = new Vector3(
+            pitchRadiansPerSecond,
+            yawRadiansPerSecond,
+            rollRadiansPerSecond);
+        return Vector3.ClampMagnitude(baseAngularVelocity, Mathf.Max(0.0f, maxAngularSpeedRadiansPerSecond));
     }
 
     private Vector3 ApplyWorkspaceGuard(Vector3 requestedBaseVelocity)
@@ -432,7 +518,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             }
         }
 
-        if (IsRotationClutched && latestRotationValid)
+        if (IsRotationClutched && IsJoystickRotationMode())
+        {
+            desiredRotation = CalculateJoystickPreviewRotation(tcpPreviewTarget.rotation, deltaTime);
+        }
+        else if (IsRotationClutched && latestRotationValid)
         {
             desiredRotation = CalculateRelativePreviewRotation(latestRotationWorld);
         }
@@ -476,6 +566,21 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return Quaternion.AngleAxis(scaledAngle, axis.normalized) * rotationClutchStartTargetWorldRotation;
     }
 
+    private Quaternion CalculateJoystickPreviewRotation(Quaternion currentRotation, float deltaTime)
+    {
+        Vector3 worldAngularVelocity = BaseDirectionToWorld(filteredBaseAngularVelocity);
+        float angularSpeed = worldAngularVelocity.magnitude;
+        if (angularSpeed < 0.000001f)
+        {
+            return currentRotation;
+        }
+
+        Quaternion deltaRotation = Quaternion.AngleAxis(
+            angularSpeed * Mathf.Rad2Deg * Mathf.Max(0.0001f, deltaTime),
+            worldAngularVelocity.normalized);
+        return deltaRotation * currentRotation;
+    }
+
     private float GetRelativePreviewPositionScale()
     {
         float scale = Mathf.Max(0.0f, relativePreviewPositionScale);
@@ -509,6 +614,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         return value.normalized * (magnitude - Mathf.Max(0.0f, deadband));
+    }
+
+    private Vector2 ApplyJoystickDeadband(Vector2 value, float deadband)
+    {
+        float magnitude = value.magnitude;
+        if (magnitude <= deadband || magnitude < 0.000001f)
+        {
+            return Vector2.zero;
+        }
+
+        float scaledMagnitude = Mathf.InverseLerp(Mathf.Max(0.0f, deadband), 1.0f, magnitude);
+        return value.normalized * Mathf.Clamp01(scaledMagnitude);
     }
 
     private Vector3 WorldDirectionToBase(Vector3 worldDirection)
@@ -557,6 +674,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return true;
     }
 
+    private bool TryReadRotationJoystick(InputDevice device, out Vector2 joystick)
+    {
+        joystick = Vector2.zero;
+        return device.isValid
+            && device.TryGetFeatureValue(CommonUsages.primary2DAxis, out joystick);
+    }
+
     private bool ReadGripDeadman(InputDevice device, ref bool gripLatched)
     {
         if (!device.isValid)
@@ -594,6 +718,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && device.isValid
             && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryPressed)
             && primaryPressed;
+    }
+
+    private bool ReadSecondaryButton(InputDevice device)
+    {
+        return device.isValid
+            && device.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryPressed)
+            && secondaryPressed;
+    }
+
+    private bool IsJoystickRotationMode()
+    {
+        return rotationInputMode == RotationInputMode.Joystick;
     }
 
     private void TryRefreshPositionDevice()
@@ -669,6 +805,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         angularSpeedGain = Mathf.Max(0.0f, angularSpeedGain);
         maxAngularSpeedRadiansPerSecond = Mathf.Max(0.0f, maxAngularSpeedRadiansPerSecond);
         angularDeadbandDegrees = Mathf.Max(0.0f, angularDeadbandDegrees);
+        rotationJoystickDeadband = Mathf.Clamp01(rotationJoystickDeadband);
+        joystickYawSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickYawSpeedDegreesPerSecond);
+        joystickPitchSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickPitchSpeedDegreesPerSecond);
+        joystickRollSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickRollSpeedDegreesPerSecond);
         commandSmoothingSharpness = Mathf.Max(0.0f, commandSmoothingSharpness);
         maxLinearAcceleration = Mathf.Max(0.0f, maxLinearAcceleration);
         maxAngularAcceleration = Mathf.Max(0.0f, maxAngularAcceleration);

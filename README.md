@@ -20,19 +20,45 @@ Quest 3 手柄
 - `Ur5JointTrajectoryPlayer` 负责像 Unity Robotics Hub 的 trajectory playback 一样，把关节路点按 `jointAssignmentIntervalSeconds` 固定写入 xDrive。
 - `QueueMode.LatestOnly` 会丢弃积压旧路点，只执行最新路点，避免 Quest 手柄噪声和帧率波动造成控制滞后。
 
+## 是否符合主流流程
+
+当前控制流程符合主流 XR/VR 机械臂遥操作的 Unity 预览阶段做法：输入层只产生目标 TCP 位姿或速度，控制层按固定周期限速执行，松手 deadman 停止，轨迹队列采用 latest-only，夹爪和 TCP 控制分离。
+
+还不应直接视为真机生产级闭环控制。接入真机前必须补齐实际 TCP/关节反馈闭环、机器人侧速度/加速度/jerk 限制、急停/保护停止、工作空间与自碰撞约束、相机/基座/机器人坐标标定，以及数据集记录的时间同步。
+
 ## 手柄操作
 
-- 右手 grip：平移 TCP 目标。
-- 左手 grip：旋转 TCP 目标。
-- primary button：细控制模式，降低线速度、角速度和相对位姿映射比例，用于靠近物体或采集精细动作。
-- trigger/grip 夹爪控制：仍由原夹爪脚本处理，和机械臂 TCP 控制分离。
-- 松开 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
+- 右手 grip：进入一手 6DoF 控制，右手平移带动 TCP 平移，右手姿态变化带动 TCP 旋转。
+- 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
+- 右手 primary/A：细控制模式，降低线速度、角速度和相对位姿映射比例，用于靠近物体或采集精细动作。
+- 右手 secondary/B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。
+- 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
+- 左手柄默认不参与控制；如需回退到摇杆旋转，可把 `rotationInputMode` 改为 `Joystick` 并把 `rotationControllerNode` 设为 `LeftHand`。
+
+## 抓取辅助
+
+`Ur5GraspAssistController` 将 GitHub Pick-and-Place 的抓取分段迁移到当前非 ROS 控制链：
+
+```text
+选择 TCP 附近小物体
+  -> PreGrasp: 移到物体上方
+  -> Grasp: 沿上方接近方向垂直下探
+  -> Close: 暂停手柄夹爪输入并闭合夹爪
+  -> Lift: 抬升到安全高度
+  -> 交还手柄控制
+```
+
+- 默认自动选择 `TcpTarget` 附近 `0.35m` 内、尺寸小于 `0.35m` 的非机器人碰撞体。
+- 抓取辅助期间会暂停 `Ur5CartesianVelocityTeleopController.enableUnityPreview`，防止手柄输入和自动抓取目标互相打架。
+- 抓取辅助默认保持当前 TCP 姿态；实际使用时先用右手 grip 一手调整夹爪位姿，再按右手 secondary/B 启动辅助。
+- 安全检查会阻止 TCP 目标进入机器人本体近距离区域，降低撞到自身手臂的风险。
 
 ## 关键脚本
 
 - `Assets/Scripts/UR5/Ur5CartesianVelocityTeleopController.cs`：Quest 输入、相对位姿预览、未来真机 `speedl` 速度命令源。
 - `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 误差到关节路点的局部求解器。
 - `Assets/Scripts/UR5/Ur5JointTrajectoryPlayer.cs`：关节路点队列和固定节拍 xDrive 写入。
+- `Assets/Scripts/UR5/Ur5GraspAssistController.cs`：半自动 PreGrasp/Grasp/Close/Lift 抓取辅助。
 - `Assets/Scripts/UR5/Ur5ArticulationJointController.cs`：UR5 六关节发现、drive 参数、批量关节目标写入。
 - `Assets/Scripts/UR5/Ur5UrScriptSpeedlClient.cs`：真机 URScript `speedl` 输出，默认关闭，需要显式 enable/arm。
 - `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：记录 TCP、关节目标、速度、轨迹队列状态和真机输出状态。
@@ -42,13 +68,15 @@ Quest 3 手柄
 先只在 Unity/Quest 里调稳定性，不连接真机：
 
 1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
-2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.20`、`jointAssignmentIntervalSeconds = 0.016`。
-3. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees`，例如从 `1.20` 降到 `0.80`。
-4. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
-5. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
-6. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
-7. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
-8. 如果普通模式太灵敏，按住 primary button 进入细控；如果仍太灵敏，降低 `relativePreviewPositionScale` 和 `relativePreviewRotationScale`。
+2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.45`、`maxWristStepDegrees = 2.00`、`jointAssignmentIntervalSeconds = 0.016`。
+3. 右手一手控制默认参数：`positionControllerNode = RightHand`、`rotationControllerNode = RightHand`、`rotationInputMode = ControllerPoseDelta`、`relativePreviewRotationScale = 1.80`、`previewMaxAngularSpeedDegreesPerSecond = 420`。
+4. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees` 和 `maxWristStepDegrees`，例如从 `1.45` / `2.00` 降到 `1.20` / `1.50`。
+5. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
+6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
+7. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
+8. 如果右手姿态旋转太灵敏，先降低 `relativePreviewRotationScale`；如果仍慢，再提高 `previewMaxAngularSpeedDegreesPerSecond`。
+9. 如果手柄轻微抖动会触发目标移动，提高 `linearDeadbandMeters` 或 `angularDeadbandDegrees`。
+10. 如果普通模式太灵敏，按住 primary/A 进入细控；如果仍太灵敏，降低 `relativePreviewPositionScale` 或 `relativePreviewRotationScale`。
 
 ## 真机扩展策略
 
@@ -91,3 +119,5 @@ Unity 阶段使用本地关节路点播放来稳定数字孪生；真机阶段�
 
 - Unity Robotics Hub: <https://github.com/Unity-Technologies/Unity-Robotics-Hub>
 - 参考思路：`tutorials/pick_and_place/Scripts/TrajectoryPlanner.cs` 中的 trajectory execution，会逐个轨迹点把每个关节的 `xDrive.target` 更新为规划结果。
+- Unitree XR Teleoperate: <https://github.com/unitreerobotics/xr_teleoperate>
+- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认使用右手 6DoF 姿态差分控制，保留摇杆旋转作为可选回退，不引入 Unitree SDK。

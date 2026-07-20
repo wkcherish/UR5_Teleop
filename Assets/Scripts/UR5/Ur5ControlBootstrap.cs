@@ -71,9 +71,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
             follower = ConfigureTcpTargetFollower(jointController, trajectoryPlayer);
         }
         ConfigureGripperController();
+        Ur5GraspAssistController graspAssist = ConfigureGraspAssist(follower);
         ConfigureSpectatorCamera();
         ConfigureControllerVisualizer();
-        ConfigureRecorder(jointController, trajectoryPlayer, follower);
+        ConfigureRecorder(jointController, trajectoryPlayer, follower, graspAssist);
     }
 
     private void ResolveTcpTarget()
@@ -155,8 +156,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         jointController.damping = 5200.0f;
         jointController.forceLimit = 30000.0f;
         jointController.smoothDriveTargets = true;
-        jointController.maxDriveSpeedDegreesPerSecond = 180.0f;
-        jointController.maxDriveAccelerationDegreesPerSecondSquared = 5000.0f;
+        jointController.maxDriveSpeedDegreesPerSecond = 240.0f;
+        jointController.maxDriveAccelerationDegreesPerSecondSquared = 7000.0f;
         jointController.driveTargetToleranceDegrees = 0.005f;
         jointController.ApplyConfiguredDriveSettings();
     }
@@ -207,24 +208,24 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
         follower.useGripperPadCenter = false;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 1.20f;
+        follower.maxJointStepDegrees = 1.45f;
         follower.minimumJointDeltaDegrees = 0.015f;
-        follower.maximumCommandLeadDegrees = 5.00f;
+        follower.maximumCommandLeadDegrees = 6.00f;
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.016f;
-        follower.dlsDamping = 0.35f;
-        follower.dlsOrientationWeight = 0.35f;
-        follower.dlsGain = 0.40f;
-        follower.jointDeltaSmoothing = 0.55f;
-        follower.rotationToleranceDegrees = 2.00f;
-        follower.rotationBlend = 0.40f;
-        follower.maxWristStepDegrees = 0.90f;
+        follower.dlsDamping = 0.32f;
+        follower.dlsOrientationWeight = 0.55f;
+        follower.dlsGain = 0.46f;
+        follower.jointDeltaSmoothing = 0.45f;
+        follower.rotationToleranceDegrees = 1.20f;
+        follower.rotationBlend = 0.70f;
+        follower.maxWristStepDegrees = 2.00f;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
         follower.targetStationaryPositionEpsilon = 0.0015f;
-        follower.targetStationaryRotationEpsilonDegrees = 0.35f;
+        follower.targetStationaryRotationEpsilonDegrees = 0.30f;
         follower.settledPositionError = 0.010f;
-        follower.settledRotationErrorDegrees = 2.50f;
+        follower.settledRotationErrorDegrees = 1.50f;
 
         Ur5ActualTcpMarker actualMarker = tcpTarget.GetComponent<Ur5ActualTcpMarker>();
         if (actualMarker == null)
@@ -262,13 +263,23 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.workspaceLimiter = tcpTarget != null
             ? tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>()
             : null;
+        velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
+        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        velocityTeleop.rotationJoystickDeadband = 0.12f;
+        velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
+        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
+        velocityTeleop.joystickRollSpeedDegreesPerSecond = 200.0f;
+        velocityTeleop.useSecondaryButtonForJoystickRoll = true;
+        velocityTeleop.invertJoystickPitch = false;
+        velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
         velocityTeleop.linearDeadbandMeters = 0.005f;
         velocityTeleop.angularDeadbandDegrees = 1.2f;
         velocityTeleop.relativePreviewPositionScale = 2.40f;
         velocityTeleop.relativePreviewRotationScale = 1.80f;
         velocityTeleop.previewMaxLinearSpeed = 0.35f;
-        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 300.0f;
+        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 28.0f;
         velocityTeleop.applyFineControlToRelativePreview = true;
@@ -278,8 +289,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.maxLinearSpeed = 0.14f;
         velocityTeleop.maxLinearAcceleration = 0.40f;
         velocityTeleop.angularSpeedGain = 1.30f;
-        velocityTeleop.maxAngularSpeedRadiansPerSecond = 0.85f;
-        velocityTeleop.maxAngularAcceleration = 2.20f;
+        velocityTeleop.maxAngularSpeedRadiansPerSecond = 4.00f;
+        velocityTeleop.maxAngularAcceleration = 10.00f;
 
         if (addUrScriptSpeedlClient)
         {
@@ -313,6 +324,51 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         gripperController.robotRoot = robotRoot;
+        gripperController.controllerNode = UnityEngine.XR.XRNode.RightHand;
+        gripperController.useTrigger = true;
+        gripperController.triggerDeadband = 0.04f;
+        gripperController.triggerSmoothingSharpness = 22.0f;
+        gripperController.closeSpeedPerSecond = 2.60f;
+        gripperController.openSpeedPerSecond = 3.20f;
+        gripperController.damping = 450.0f;
+        gripperController.forceLimit = 160.0f;
+        gripperController.ApplyConfiguredDriveSettings();
+    }
+
+    private Ur5GraspAssistController ConfigureGraspAssist(Ur5TcpTargetFollower follower)
+    {
+        if (robotRoot == null || tcpTarget == null)
+        {
+            return null;
+        }
+
+        Ur5GraspAssistController graspAssist = GetComponent<Ur5GraspAssistController>();
+        if (graspAssist == null)
+        {
+            graspAssist = gameObject.AddComponent<Ur5GraspAssistController>();
+        }
+
+        graspAssist.enabled = true;
+        graspAssist.robotRoot = robotRoot;
+        graspAssist.tcpTarget = tcpTarget;
+        graspAssist.tcpFollower = follower != null
+            ? follower
+            : robotRoot.GetComponent<Ur5TcpTargetFollower>();
+        graspAssist.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
+        graspAssist.workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
+        graspAssist.gripperController = robotRoot.GetComponent<Quest3RobotiqGripperController>();
+        graspAssist.autoSelectNearestTarget = true;
+        graspAssist.targetSearchRadius = 0.35f;
+        graspAssist.maxAutoTargetSize = 0.35f;
+        graspAssist.preGraspHeight = 0.12f;
+        graspAssist.graspClearance = 0.015f;
+        graspAssist.liftHeight = 0.16f;
+        graspAssist.assistMoveSpeed = 0.16f;
+        graspAssist.waypointTolerance = 0.012f;
+        graspAssist.actualPositionTolerance = 0.025f;
+        graspAssist.robotBodyClearanceRadius = 0.075f;
+        graspAssist.preserveCurrentTcpRotation = true;
+        return graspAssist;
     }
 
     private void ConfigureSpectatorCamera()
@@ -341,7 +397,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
     private void ConfigureRecorder(
         Ur5ArticulationJointController jointController,
         Ur5JointTrajectoryPlayer trajectoryPlayer,
-        Ur5TcpTargetFollower follower)
+        Ur5TcpTargetFollower follower,
+        Ur5GraspAssistController graspAssist)
     {
         Ur5PoseCsvRecorder recorder = GetComponent<Ur5PoseCsvRecorder>();
         if (recorder == null)
@@ -352,6 +409,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         recorder.tcpTarget = tcpTarget;
         recorder.jointController = jointController;
         recorder.trajectoryPlayer = trajectoryPlayer;
+        recorder.graspAssist = graspAssist;
         recorder.tcpFollower = follower != null
             ? follower
             : FindObjectOfType<Ur5TcpTargetFollower>();
