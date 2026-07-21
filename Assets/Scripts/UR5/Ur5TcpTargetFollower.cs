@@ -95,6 +95,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public bool snapTargetToActualPoseWhenQuestReleased = true;
     public bool holdJointPoseWhenQuestReleased = true;
 
+    [Header("精细定位释放收敛")]
+    [Tooltip("松开 Quest Grip 后，先让 IK 收敛到最后一个 TCP 目标，再冻结关节；避免目标点被提前截断。")]
+    public bool finishVelocityTargetAfterRelease = true;
+    public float velocityReleasePositionTolerance = 0.003f;
+    public float velocityReleaseRotationToleranceDegrees = 0.50f;
+    public float velocityReleaseSettleTimeoutSeconds = 2.0f;
+
     [Header("Settled Target Hold")]
     public bool holdJointPoseWhenTargetSettled = true;
     public float targetStationaryHoldSeconds = 0.12f;
@@ -129,6 +136,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool loggedReady;
     private bool loggedMissingReferences;
     private bool wasControllerCommandActive;
+    private bool wasVelocityTeleopCommandActive;
+    private bool velocityReleaseSettlePending;
+    private float velocityReleaseSettleElapsedSeconds;
     private bool isControllerIdleHoldActive;
     private bool hasLastTargetPose;
     private Vector3 lastTargetPosition;
@@ -242,6 +252,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         jointAssignmentIntervalSeconds = Mathf.Max(0.0f, jointAssignmentIntervalSeconds);
         readyPoseMaxJointSpeedDegreesPerSecond = Mathf.Max(0.0f, readyPoseMaxJointSpeedDegreesPerSecond);
         readyPoseJointToleranceDegrees = Mathf.Max(0.01f, readyPoseJointToleranceDegrees);
+        velocityReleasePositionTolerance = Mathf.Max(0.0f, velocityReleasePositionTolerance);
+        velocityReleaseRotationToleranceDegrees = Mathf.Max(0.0f, velocityReleaseRotationToleranceDegrees);
+        velocityReleaseSettleTimeoutSeconds = Mathf.Max(0.0f, velocityReleaseSettleTimeoutSeconds);
     }
 
     private void OnDisable()
@@ -391,7 +404,38 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             && velocityTeleop != null
             && velocityTeleop.enabled)
         {
-            return !velocityTeleop.IsCommandActive;
+            if (velocityTeleop.IsCommandActive)
+            {
+                wasVelocityTeleopCommandActive = true;
+                velocityReleaseSettlePending = false;
+                velocityReleaseSettleElapsedSeconds = 0.0f;
+                return false;
+            }
+
+            if (wasVelocityTeleopCommandActive && finishVelocityTargetAfterRelease)
+            {
+                wasVelocityTeleopCommandActive = false;
+                velocityReleaseSettlePending = true;
+                velocityReleaseSettleElapsedSeconds = 0.0f;
+            }
+
+            if (velocityReleaseSettlePending)
+            {
+                UpdateTrackingErrorsOnly();
+                velocityReleaseSettleElapsedSeconds += Time.fixedDeltaTime;
+                bool reachedPrecisionTarget = PositionError <= velocityReleasePositionTolerance
+                    && RotationErrorDegrees <= velocityReleaseRotationToleranceDegrees;
+                bool timedOut = velocityReleaseSettleElapsedSeconds
+                    >= velocityReleaseSettleTimeoutSeconds;
+                if (!reachedPrecisionTarget && !timedOut)
+                {
+                    return false;
+                }
+
+                velocityReleaseSettlePending = false;
+            }
+
+            return true;
         }
 
         return pauseIkWhenQuestControllerIdle
@@ -505,7 +549,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return;
         }
 
-        if (PositionError > positionTolerance)
+        if (PositionError > GetActivePositionTolerance())
         {
             // Drives are applied by the physics simulation after this method returns.
             // More CCD passes here would repeatedly add corrections from the same pose.
@@ -520,7 +564,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
                 error = tcpTarget.position - GetControlPointPosition();
                 PositionError = error.magnitude;
-                if (PositionError <= positionTolerance)
+                if (PositionError <= GetActivePositionTolerance())
                 {
                     break;
                 }
@@ -533,7 +577,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void StepStrictTranslationWithLockedOrientation(int jointCount)
     {
-        if (PositionError > positionTolerance)
+        if (PositionError > GetActivePositionTolerance())
         {
             // 严格模式先只用 CCD 满足位置。与普通 DLS 加权折中不同，
             // 这里不会让位置误差稀释后续的完整姿态约束。
@@ -667,8 +711,46 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     {
         return holdJointPoseWhenTargetSettled
             && targetStationaryTime >= targetStationaryHoldSeconds
-            && PositionError <= settledPositionError
-            && RotationErrorDegrees <= settledRotationErrorDegrees;
+            && PositionError <= GetActiveSettledPositionError()
+            && RotationErrorDegrees <= GetActiveSettledRotationErrorDegrees();
+    }
+
+    /// <summary>
+    /// 精细定位或刚释放 Grip 的收敛阶段采用毫米级阈值；普通快速移动仍使用
+    /// 原有阈值，从而兼顾装配精度和大范围移动时的平顺性。
+    /// </summary>
+    private float GetActivePositionTolerance()
+    {
+        return UsesPrecisionTolerance()
+            ? Mathf.Min(positionTolerance, velocityReleasePositionTolerance)
+            : positionTolerance;
+    }
+
+    private float GetActiveRotationToleranceDegrees()
+    {
+        return UsesPrecisionTolerance()
+            ? Mathf.Min(rotationToleranceDegrees, velocityReleaseRotationToleranceDegrees)
+            : rotationToleranceDegrees;
+    }
+
+    private float GetActiveSettledPositionError()
+    {
+        return UsesPrecisionTolerance()
+            ? Mathf.Min(settledPositionError, velocityReleasePositionTolerance)
+            : settledPositionError;
+    }
+
+    private float GetActiveSettledRotationErrorDegrees()
+    {
+        return UsesPrecisionTolerance()
+            ? Mathf.Min(settledRotationErrorDegrees, velocityReleaseRotationToleranceDegrees)
+            : settledRotationErrorDegrees;
+    }
+
+    private bool UsesPrecisionTolerance()
+    {
+        return velocityReleaseSettlePending
+            || (velocityTeleop != null && velocityTeleop.IsFinePositionControlActive);
     }
 
     private void HoldCurrentPoseAtSettledTarget()
@@ -764,10 +846,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             : Vector3.zero;
         RotationErrorDegrees = rotationErrorRadians.magnitude * Mathf.Rad2Deg;
 
-        bool solvePosition = PositionError > positionTolerance;
+        bool solvePosition = PositionError > GetActivePositionTolerance();
         bool isTranslationOrientationHold = IsTranslationOrientationHoldActive();
         bool solveRotation = allowRotationSolve
-            && (isTranslationOrientationHold || RotationErrorDegrees > rotationToleranceDegrees);
+            && (isTranslationOrientationHold
+                || RotationErrorDegrees > GetActiveRotationToleranceDegrees());
         if (!solvePosition && !solveRotation)
         {
             return;
@@ -1019,7 +1102,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         float signedAngle = Vector3.SignedAngle(endProjected, targetProjected, axis);
         float response = adaptivePositionSpeed
-            ? Mathf.InverseLerp(positionTolerance, fullSpeedPositionError, PositionError)
+            ? Mathf.InverseLerp(GetActivePositionTolerance(), fullSpeedPositionError, PositionError)
             : 1.0f;
         float effectiveAngleBlend = Mathf.Lerp(angleBlend * 0.55f, angleBlend, response);
         float effectiveMaxStep = Mathf.Lerp(maxJointStepDegrees * 0.55f, maxJointStepDegrees, response);
@@ -1052,7 +1135,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         Quaternion currentOrientation = GetCurrentOrientationFrame();
         Quaternion targetOrientation = GetTargetOrientationFrame();
         RotationErrorDegrees = Quaternion.Angle(currentOrientation, targetOrientation);
-        if (RotationErrorDegrees <= rotationToleranceDegrees)
+        if (RotationErrorDegrees <= GetActiveRotationToleranceDegrees())
         {
             return;
         }

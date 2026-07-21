@@ -220,6 +220,10 @@ public static class Ur5AutoSceneBootstrap
         follower.maxWristStepDegrees = 3.00f;
         // 保持当前工具姿态约束；右手平移时不能让位置 IK 自由改变腕关节姿态。
         follower.suppressRotationOnlyIkDuringPositionControl = false;
+        follower.finishVelocityTargetAfterRelease = true;
+        follower.velocityReleasePositionTolerance = 0.003f;
+        follower.velocityReleaseRotationToleranceDegrees = 0.50f;
+        follower.velocityReleaseSettleTimeoutSeconds = 2.0f;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
         follower.targetStationaryPositionEpsilon = 0.0015f;
@@ -246,14 +250,15 @@ public static class Ur5AutoSceneBootstrap
     {
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
+        velocityTeleop.usePositionGripAsDeadman = true;
+        velocityTeleop.useRotationGripAsDeadman = true;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // Right hand translates and left hand controls grasp attitude through
-        // a relative quaternion clutch.
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        // 左手 Grip + 摇杆只绕基座 Y 轴旋转夹爪，避免手柄自身姿态噪声影响 IK。
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
-        velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
-        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
-        velocityTeleop.joystickRollSpeedDegreesPerSecond = 200.0f;
+        velocityTeleop.joystickYawSpeedDegreesPerSecond = 125.0f;
+        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 0.0f;
+        velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.invertJoystickPitch = false;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
@@ -276,8 +281,8 @@ public static class Ur5AutoSceneBootstrap
         velocityTeleop.enableLeftPrimaryReadyPose = true;
         velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
         velocityTeleop.enableLeftSecondaryOrientationHold = true;
-        velocityTeleop.enableFineControlButton = false;
-        velocityTeleop.applyFineControlToRelativePreview = false;
+        velocityTeleop.enableFineControlButton = true;
+        velocityTeleop.applyFineControlToRelativePreview = true;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
         velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
         velocityTeleop.linearSpeedGain = 1.20f;
@@ -305,6 +310,9 @@ public static class Ur5AutoSceneBootstrap
         gripperController.robotRoot = robotRoot;
         gripperController.controllerNode = UnityEngine.XR.XRNode.RightHand;
         gripperController.useTrigger = true;
+        gripperController.requireGripDeadman = true;
+        gripperController.gripPressThreshold = 0.65f;
+        gripperController.gripReleaseThreshold = 0.40f;
         gripperController.triggerDeadband = 0.04f;
         gripperController.triggerSmoothingSharpness = 22.0f;
         gripperController.closeSpeedPerSecond = 2.60f;

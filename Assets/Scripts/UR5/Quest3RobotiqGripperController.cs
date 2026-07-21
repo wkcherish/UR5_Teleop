@@ -15,6 +15,10 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     [Header("Quest Input")]
     public XRNode controllerNode = XRNode.RightHand;
     public bool useTrigger = true;
+    [Tooltip("右手 Grip 是夹爪 Trigger 的死手开关。未握住 Grip 时，扳机输入不会改变夹爪目标。")]
+    public bool requireGripDeadman = true;
+    [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
+    [Range(0.0f, 1.0f)] public float gripReleaseThreshold = 0.40f;
     [Range(0.0f, 0.25f)] public float triggerDeadband = 0.04f;
     public float triggerSmoothingSharpness = 22.0f;
 
@@ -36,6 +40,7 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     private InputDevice controllerDevice;
     private float currentCloseAmount;
     private float filteredTriggerAmount;
+    private bool gripLatched;
 
     public float CloseAmount => currentCloseAmount;
 
@@ -51,6 +56,7 @@ public class Quest3RobotiqGripperController : MonoBehaviour
         {
             RefreshDeviceIfNeeded();
             if (controllerDevice.isValid
+                && (!requireGripDeadman || ReadGripDeadman())
                 && controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float triggerAmount))
             {
                 float desiredTriggerAmount = ApplyTriggerDeadband(triggerAmount);
@@ -206,6 +212,29 @@ public class Quest3RobotiqGripperController : MonoBehaviour
         return Mathf.InverseLerp(deadband, 1.0f, clamped);
     }
 
+    /// <summary>
+    /// 使用滞回读取 Grip，避免握力处于阈值附近时夹爪命令反复启停。
+    /// </summary>
+    private bool ReadGripDeadman()
+    {
+        if (!controllerDevice.TryGetFeatureValue(CommonUsages.grip, out float gripAmount))
+        {
+            gripLatched = false;
+            return false;
+        }
+
+        if (gripLatched)
+        {
+            gripLatched = gripAmount >= Mathf.Clamp01(gripReleaseThreshold);
+        }
+        else
+        {
+            gripLatched = gripAmount >= Mathf.Clamp01(gripPressThreshold);
+        }
+
+        return gripLatched;
+    }
+
     private float SmoothScalar(float current, float target, float sharpness, float deltaTime)
     {
         float blend = 1.0f - Mathf.Exp(-Mathf.Max(0.0f, sharpness) * Mathf.Max(0.0001f, deltaTime));
@@ -215,6 +244,8 @@ public class Quest3RobotiqGripperController : MonoBehaviour
     private void OnValidate()
     {
         triggerDeadband = Mathf.Clamp(triggerDeadband, 0.0f, 0.25f);
+        gripPressThreshold = Mathf.Clamp01(gripPressThreshold);
+        gripReleaseThreshold = Mathf.Clamp(gripReleaseThreshold, 0.0f, gripPressThreshold);
         triggerSmoothingSharpness = Mathf.Max(0.0f, triggerSmoothingSharpness);
         targetCloseAmount = Mathf.Clamp01(targetCloseAmount);
         closedAngleDegrees = Mathf.Max(0.0f, closedAngleDegrees);

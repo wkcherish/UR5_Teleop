@@ -121,6 +121,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Range(0.0f, 1.0f)] public float gripReleaseThreshold = 0.40f;
 
     [Header("Fine Control")]
+    [Tooltip("按住右手 Grip 并按下右摇杆进入精细定位。该按键不与抓取辅助的 A/X 冲突。")]
     public bool enableFineControlButton = true;
     public bool applyFineControlToRelativePreview = true;
     [Range(0.1f, 1.0f)] public float fineLinearSpeedMultiplier = 0.25f;
@@ -138,6 +139,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool rotationGripLatched;
     private bool wasPositionClutched;
     private bool wasRotationClutched;
+    private bool wasFinePositionControlActive;
 
     private Vector3 positionNeutralWorldPosition;
     private Quaternion rotationNeutralWorldRotation;
@@ -180,6 +182,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool IsRotationClutched { get; private set; }
     public bool IsCommandActive => IsPositionClutched || IsRotationClutched;
     public bool IsFineControlActive { get; private set; }
+    /// <summary>右手 Grip + 右摇杆按下时的无跳变精细平移模式。</summary>
+    public bool IsFinePositionControlActive { get; private set; }
     public bool IsWorkspaceLimited { get; private set; }
     public bool IsInputPoseValid { get; private set; }
     public Vector3 RawBaseLinearVelocity => rawBaseLinearVelocity;
@@ -222,8 +226,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         bool hasRotation = TryReadControllerRotation(rotationDevice, out Quaternion rotationWorld);
         bool hasRotationJoystick = TryReadRotationJoystick(rotationDevice, out Vector2 rotationJoystick);
+        // 左手仅握住 Grip、摇杆居中时不接管姿态。这样右手仍可稳定地保持
+        // 当前 TCP 姿态；只有明确推动摇杆后才进入绕基座 Y 轴的旋转控制。
+        bool hasJoystickRotationCommand = hasRotationJoystick
+            && ApplyJoystickDeadband(rotationJoystick, rotationJoystickDeadband).sqrMagnitude > 0.000001f;
         bool hasRotationInput = rotationInputMode == RotationInputMode.Joystick
-            ? hasRotationJoystick
+            ? hasJoystickRotationCommand
             : rotationInputMode == RotationInputMode.ControllerPoseDelta && hasRotation;
         IsInputPoseValid = hasPosition || hasRotationInput;
         latestPositionValid = hasPosition;
@@ -262,11 +270,25 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         {
             hasPersistentOrientationTarget = false;
         }
+        else if (!IsRotationClutched && wasRotationClutched && tcpPreviewTarget != null)
+        {
+            // 松开左摇杆时将刚刚达到的姿态保存为下一轮右手平移的保持姿态，
+            // 避免因回到旧的 Grip 起始旋转而产生夹爪“自动复原”。
+            persistentOrientationTarget = tcpPreviewTarget.rotation;
+            hasPersistentOrientationTarget = true;
+            if (IsPositionClutched)
+            {
+                positionOrientationLock = persistentOrientationTarget;
+                hasPositionOrientationLock = true;
+            }
+        }
+        IsFinePositionControlActive = IsPositionClutched && ReadFineControl(positionDevice);
         IsFineControlActive =
-            (IsPositionClutched && ReadFineControl(positionDevice))
+            IsFinePositionControlActive
             || (IsRotationClutched && ReadFineControl(rotationDevice));
 
         CaptureClutchOrigins(positionWorld, rotationWorld);
+        RebasePositionClutchForFineControl(positionWorld);
         CalculateRawVelocity(positionWorld, rotationWorld);
         ApplySafetyLimitsAndFiltering(Time.deltaTime);
 
@@ -359,6 +381,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         if (!IsPositionClutched)
         {
             hasPositionOrientationLock = false;
+            wasFinePositionControlActive = false;
         }
 
         if (IsRotationClutched && !wasRotationClutched)
@@ -827,9 +850,36 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetRelativePreviewPositionScale()
     {
-        // Never change the position mapping while a grip clutch is held: that
-        // would move the target even when the user keeps the hand still.
-        return Mathf.Max(0.0f, relativePreviewPositionScale);
+        float scale = Mathf.Max(0.0f, relativePreviewPositionScale);
+        return applyFineControlToRelativePreview && IsFinePositionControlActive
+            ? scale * Mathf.Clamp01(fineLinearSpeedMultiplier)
+            : scale;
+    }
+
+    /// <summary>
+    /// 精细模式切换时重新捕获右手与 TCP 的相对基准。这样按下或松开右摇杆
+    /// 不会改变当前目标点，只会改变之后手部位移的分辨率。
+    /// </summary>
+    private void RebasePositionClutchForFineControl(Vector3 positionWorld)
+    {
+        if (!IsPositionClutched || !latestPositionValid)
+        {
+            wasFinePositionControlActive = false;
+            return;
+        }
+
+        if (IsFinePositionControlActive == wasFinePositionControlActive)
+        {
+            return;
+        }
+
+        positionNeutralWorldPosition = positionWorld;
+        if (tcpPreviewTarget != null)
+        {
+            positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
+        }
+
+        wasFinePositionControlActive = IsFinePositionControlActive;
     }
 
     private float GetRelativePreviewRotationScale()
@@ -1027,8 +1077,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     {
         return enableFineControlButton
             && device.isValid
-            && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryPressed)
-            && primaryPressed;
+            && device.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out bool stickPressed)
+            && stickPressed;
     }
 
     private bool ReadSecondaryButton(InputDevice device)

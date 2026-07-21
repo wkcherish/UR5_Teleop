@@ -240,6 +240,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
         follower.graspAssist = GetComponent<Ur5GraspAssistController>();
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
+        follower.finishVelocityTargetAfterRelease = true;
+        follower.velocityReleasePositionTolerance = 0.003f;
+        follower.velocityReleaseRotationToleranceDegrees = 0.50f;
+        follower.velocityReleaseSettleTimeoutSeconds = 2.0f;
         // The task-space target is the midpoint of the two Robotiq pads,
         // rather than the wrist flange. This is the point that actually
         // reaches the object during a grasp.
@@ -320,14 +324,15 @@ public class Ur5ControlBootstrap : MonoBehaviour
             : null;
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
+        velocityTeleop.usePositionGripAsDeadman = true;
+        velocityTeleop.useRotationGripAsDeadman = true;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // Core bimanual task-space control: right hand translates and left
-        // hand changes grasp attitude using a relative quaternion clutch.
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        // 右手 Grip 控制 TCP 平移；左手仅在 Grip + 摇杆时绕基座 Y 轴调整夹爪偏航。
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
         velocityTeleop.rotationJoystickDeadband = 0.12f;
-        velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
-        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 180.0f;
-        velocityTeleop.joystickRollSpeedDegreesPerSecond = 200.0f;
+        velocityTeleop.joystickYawSpeedDegreesPerSecond = 125.0f;
+        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 0.0f;
+        velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
         // B is reserved for grasp assist, so it must not also roll the TCP.
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.invertJoystickPitch = false;
@@ -348,8 +353,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.enableLeftPrimaryReadyPose = true;
         velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
         velocityTeleop.enableLeftSecondaryOrientationHold = true;
-        velocityTeleop.enableFineControlButton = false;
-        velocityTeleop.applyFineControlToRelativePreview = false;
+        velocityTeleop.enableFineControlButton = true;
+        velocityTeleop.applyFineControlToRelativePreview = true;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
         velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
         ApplyQuestTeleopSpeedProfile(velocityTeleop);
@@ -435,6 +440,9 @@ public class Ur5ControlBootstrap : MonoBehaviour
         gripperController.robotRoot = robotRoot;
         gripperController.controllerNode = UnityEngine.XR.XRNode.RightHand;
         gripperController.useTrigger = true;
+        gripperController.requireGripDeadman = true;
+        gripperController.gripPressThreshold = 0.65f;
+        gripperController.gripReleaseThreshold = 0.40f;
         gripperController.triggerDeadband = 0.04f;
         gripperController.triggerSmoothingSharpness = 22.0f;
         gripperController.closeSpeedPerSecond = 2.60f;
