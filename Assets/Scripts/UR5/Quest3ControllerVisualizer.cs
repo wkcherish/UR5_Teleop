@@ -8,6 +8,8 @@ public class Quest3ControllerVisualizer : MonoBehaviour
     public Transform xrOrigin;
     public bool showLeftController = true;
     public bool showRightController = true;
+    [Tooltip("关闭后隐藏 Unity 生成的虚拟手柄；Passthrough 模式下可直接观察真实手柄。")]
+    public bool renderVirtualControllers = true;
     public bool useOfficialTouchPlusModels = true;
     public float officialTouchPlusModelScale = 0.01f;
 
@@ -45,8 +47,28 @@ public class Quest3ControllerVisualizer : MonoBehaviour
 
     private void LateUpdate()
     {
+        if (!renderVirtualControllers)
+        {
+            SetVisualActive(leftVisual, false);
+            SetVisualActive(rightVisual, false);
+            return;
+        }
+
         UpdateVisual(XRNode.LeftHand, ref leftDevice, leftVisual);
         UpdateVisual(XRNode.RightHand, ref rightDevice, rightVisual);
+    }
+
+    /// <summary>
+    /// 显示或隐藏 Unity 中的手柄模型，不影响 Quest 控制器输入和数据采集。
+    /// </summary>
+    public void SetVirtualControllerVisibility(bool visible)
+    {
+        renderVirtualControllers = visible;
+        if (!visible)
+        {
+            SetVisualActive(leftVisual, false);
+            SetVisualActive(rightVisual, false);
+        }
     }
 
     private void UpdateVisual(XRNode node, ref InputDevice device, ControllerVisual visual)
@@ -90,6 +112,14 @@ public class Quest3ControllerVisualizer : MonoBehaviour
         if (visual.trigger != null)
         {
             visual.trigger.localPosition = new Vector3(0.0f, -0.013f, 0.042f - triggerAmount * 0.018f);
+        }
+    }
+
+    private void SetVisualActive(ControllerVisual visual, bool active)
+    {
+        if (visual != null && visual.root != null)
+        {
+            visual.root.gameObject.SetActive(active);
         }
     }
 

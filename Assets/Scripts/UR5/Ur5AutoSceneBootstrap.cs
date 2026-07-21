@@ -7,9 +7,12 @@ public static class Ur5AutoSceneBootstrap
 {
     private const float FallbackQuestRefreshRate = 72.0f;
     private static readonly List<XRDisplaySubsystem> DisplaySubsystems = new List<XRDisplaySubsystem>();
+    private static readonly List<XRInputSubsystem> InputSubsystems = new List<XRInputSubsystem>();
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void InstallAfterSceneLoad()
     {
+        ApplyQuestFloorTrackingOrigin();
+        ConfigurePassthroughCameraBackground();
         ApplyQuestRuntimeTiming();
         InstallStabilizer();
         InstallTargetWorkspaceLimiter();
@@ -25,6 +28,8 @@ public static class Ur5AutoSceneBootstrap
 
     private static void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        ApplyQuestFloorTrackingOrigin();
+        ConfigurePassthroughCameraBackground();
         ApplyQuestRuntimeTiming();
         InstallStabilizer();
         InstallTargetWorkspaceLimiter();
@@ -110,6 +115,11 @@ public static class Ur5AutoSceneBootstrap
         follower.graspAssist = Object.FindObjectOfType<Ur5GraspAssistController>();
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
         ApplyStableFollowerDefaults(follower);
+        Ur5ControlBootstrap controlBootstrap = Object.FindObjectOfType<Ur5ControlBootstrap>();
+        if (controlBootstrap != null)
+        {
+            follower.maxJointStepDegrees = controlBootstrap.questMaxJointStepDegrees;
+        }
 
         Ur5ActualTcpMarker actualMarker = target.GetComponent<Ur5ActualTcpMarker>();
         if (actualMarker == null)
@@ -148,6 +158,7 @@ public static class Ur5AutoSceneBootstrap
             ? target.GetComponent<TcpTargetWorkspaceLimiter>()
             : null;
         ApplyStableVelocityTeleopDefaults(velocityTeleop);
+        bootstrap.ApplyQuestTeleopSpeedProfile(velocityTeleop);
 
         if (bootstrap.addUrScriptSpeedlClient)
         {
@@ -189,21 +200,25 @@ public static class Ur5AutoSceneBootstrap
     {
         follower.useGripperPadCenter = true;
         follower.usePadGeometryCenter = true;
+        // 姿态与位置统一以两指中心抓取坐标系计算，避免 tool0 轴约定导致夹爪偏航。
+        follower.usePhysicalGraspFrameForOrientation = true;
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
         follower.maxJointStepDegrees = 1.45f;
         follower.minimumJointDeltaDegrees = 0.015f;
-        follower.maximumCommandLeadDegrees = 6.00f;
+        follower.maximumCommandLeadDegrees = 9.00f;
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.016f;
-        follower.dlsDamping = 0.32f;
+        follower.dlsDamping = 0.18f;
         follower.dlsOrientationWeight = 1.50f;
-        follower.dlsGain = 0.46f;
+        follower.translationOrientationHoldWeight = 3.00f;
+        follower.dlsGain = 0.85f;
         follower.proximalOrientationWeight = 0.05f;
-        follower.jointDeltaSmoothing = 0.20f;
-        follower.rotationToleranceDegrees = 0.45f;
+        follower.jointDeltaSmoothing = 0.10f;
+        follower.rotationToleranceDegrees = 0.03f;
         follower.rotationBlend = 0.70f;
         follower.maxWristStepDegrees = 3.00f;
+        // 保持当前工具姿态约束；右手平移时不能让位置 IK 自由改变腕关节姿态。
         follower.suppressRotationOnlyIkDuringPositionControl = false;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
@@ -416,6 +431,14 @@ public static class Ur5AutoSceneBootstrap
 
         GameObject xrOrigin = GameObject.Find("XR Origin (VR)");
         visualizer.xrOrigin = xrOrigin != null ? xrOrigin.transform : null;
+        visualizer.SetVirtualControllerVisibility(
+            !IsPassthroughEnabled() || bootstrap.showVirtualControllersInPassthrough);
+    }
+
+    private static bool IsPassthroughEnabled()
+    {
+        Transform xrOrigin = FindXrOrigin();
+        return xrOrigin != null && xrOrigin.GetComponent("OVRPassthroughLayer") != null;
     }
 
     private static bool ShouldDisablePoseIkForVelocityTeleop()
@@ -481,6 +504,44 @@ public static class Ur5AutoSceneBootstrap
         Application.targetFrameRate = Mathf.RoundToInt(refreshRate);
         Time.fixedDeltaTime = 1.0f / refreshRate;
         Time.maximumDeltaTime = Mathf.Max(Time.fixedDeltaTime * 4.0f, Time.fixedDeltaTime);
+    }
+
+    private static void ApplyQuestFloorTrackingOrigin()
+    {
+        SubsystemManager.GetSubsystems(InputSubsystems);
+        foreach (XRInputSubsystem inputSubsystem in InputSubsystems)
+        {
+            if (inputSubsystem == null || !inputSubsystem.running)
+            {
+                continue;
+            }
+
+            // 将 Unity 世界的 Y=0 固定为 Quest Guardian 地面，避免设备原点
+            // 落在头部高度时让机器人模型悬浮在手柄上方。
+            inputSubsystem.TrySetTrackingOriginMode(TrackingOriginModeFlags.Floor);
+        }
+    }
+
+    private static void ConfigurePassthroughCameraBackground()
+    {
+        Transform xrOrigin = FindXrOrigin();
+        if (xrOrigin == null || xrOrigin.GetComponent("OVRPassthroughLayer") == null)
+        {
+            return;
+        }
+
+        Camera xrCamera = xrOrigin.GetComponentInChildren<Camera>(true);
+        if (xrCamera == null)
+        {
+            return;
+        }
+
+        // Underlay Passthrough 只能透过 Unity 眼睛缓冲区的透明区域显示。
+        // 即使 Inspector 被手动改动，也在运行时强制使用透明纯色背景。
+        Color transparentBackground = xrCamera.backgroundColor;
+        transparentBackground.a = 0.0f;
+        xrCamera.clearFlags = CameraClearFlags.SolidColor;
+        xrCamera.backgroundColor = transparentBackground;
     }
 
     private static float ResolveDisplayRefreshRate()

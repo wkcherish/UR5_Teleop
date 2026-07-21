@@ -167,6 +167,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool leftSecondaryWasPressed;
     private bool hasPersistentOrientationTarget;
     private Quaternion persistentOrientationTarget = Quaternion.identity;
+    // 右手仅平移时锁定完整工具四元数，不仅锁定“朝下”轴线，
+    // 也锁定夹爪两指开合方向，防止底座旋转时夹爪发生偏航自转。
+    private bool hasPositionOrientationLock;
+    private Quaternion positionOrientationLock = Quaternion.identity;
+    // X 长按的 ready pose 会直接将 TCP 同步到机械臂末端。记录其状态边沿，
+    // 以避免旧的“夹爪朝下”目标在右手首次平移时被重新应用而造成预转动。
+    private bool readyPoseWasActive;
 
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
@@ -242,6 +249,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && ReadSecondaryButton(rotationDevice);
 
         UpdateLeftControllerSafetyPose();
+        SynchronizeOrientationAfterReadyPose();
 
         IsPositionClutched = hasPosition
             && (!usePositionGripAsDeadman || ReadGripDeadman(positionDevice, ref positionGripLatched));
@@ -280,6 +288,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 filteredBaseLinearVelocity,
                 filteredBaseAngularVelocity,
                 IsCommandActive && IsInputPoseValid);
+        }
+    }
+
+    private void LateUpdate()
+    {
+        if (hasPositionOrientationLock
+            && IsPositionClutched
+            && !IsRotationClutched
+            && tcpPreviewTarget != null)
+        {
+            // 真实 UR 的 speedl 纯平移命令角速度为零。将这一不变量放在
+            // LateUpdate 再执行一次，防止场景中的辅助组件或父级变换覆盖 TCP 世界姿态。
+            tcpPreviewTarget.rotation = positionOrientationLock;
         }
     }
 
@@ -322,6 +343,22 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             {
                 positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
             }
+
+            if (!IsRotationClutched && tcpFollower != null)
+            {
+                // 右手 Grip 只负责平移。开始平移的瞬间以实际末端姿态为基准，
+                // 防止 X 初始位或上一轮 IK 残留的微小误差先驱动腕关节转动。
+                tcpFollower.HoldTargetRotationAtCurrentGraspFrame();
+                persistentOrientationTarget = tcpPreviewTarget.rotation;
+                hasPersistentOrientationTarget = true;
+                positionOrientationLock = tcpPreviewTarget.rotation;
+                hasPositionOrientationLock = true;
+            }
+        }
+
+        if (!IsPositionClutched)
+        {
+            hasPositionOrientationLock = false;
         }
 
         if (IsRotationClutched && !wasRotationClutched)
@@ -593,7 +630,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             desiredPosition = LimitPreviewLeadToActualTcp(desiredPosition);
         }
 
-        if (hasPersistentOrientationTarget)
+        if (hasPositionOrientationLock && IsPositionClutched && !IsRotationClutched)
+        {
+            // 右手只允许改变位置；此处保持的是完整旋转，不允许任何偏航自转。
+            desiredRotation = positionOrientationLock;
+        }
+        else if (hasPersistentOrientationTarget)
         {
             desiredRotation = persistentOrientationTarget;
         }
@@ -752,6 +794,20 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         IsSafetyOrientationHoldActive = secondaryPressed;
         leftPrimaryWasPressed = primaryPressed;
         leftSecondaryWasPressed = secondaryPressed;
+    }
+
+    private void SynchronizeOrientationAfterReadyPose()
+    {
+        bool isReadyPoseActive = tcpFollower != null && tcpFollower.IsReadyPoseActive;
+        if (readyPoseWasActive && !isReadyPoseActive && tcpPreviewTarget != null)
+        {
+            // ready pose 完成或被 X 松开取消时，follower 已把 TcpTarget 对齐到
+            // 当前机械臂。同步持久姿态，保证右手 Grip 只产生平移命令。
+            persistentOrientationTarget = tcpPreviewTarget.rotation;
+            hasPersistentOrientationTarget = true;
+        }
+
+        readyPoseWasActive = isReadyPoseActive;
     }
 
     private Quaternion CalculateJoystickPreviewRotation(Quaternion currentRotation, float deltaTime)

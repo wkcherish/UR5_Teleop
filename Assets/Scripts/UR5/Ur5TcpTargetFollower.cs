@@ -27,6 +27,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public Transform gripperBase;
     public string gripperBaseName = "robotiq_base_link";
     public bool usePadGeometryCenter = true;
+    [Tooltip("Use the physical frame built from the two pads for all orientation constraints. This keeps the jaw direction fixed even when tool0 has a different URDF axis convention.")]
+    public bool usePhysicalGraspFrameForOrientation = true;
 
     [Header("End Effector Search")]
     public string[] endEffectorNameHints =
@@ -69,6 +71,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
     public bool preferWristForOrientation = true;
     [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
+    [Tooltip("Right-hand translation keeps the current tool attitude as a high-priority task. Higher values prevent the gripper from tilting when the base/shoulder moves.")]
+    public float translationOrientationHoldWeight = 8.00f;
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
     [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.45f;
 
@@ -145,6 +149,32 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public Quaternion ActualGraspRotation => GetActualGraspRotation();
     public bool IsReadyPoseActive => isReadyPoseActive;
 
+    /// <summary>
+    /// 将命令 TCP 的姿态对齐到当前实际抓取坐标系，但不改变其位置。
+    /// 抓取坐标系由夹爪基座、两指中心和两指连线定义；它与用户视觉上看到的
+    /// 两个夹爪面完全一致，不依赖 tool0 在 URDF 中的局部轴约定。
+    /// </summary>
+    public void HoldTargetRotationAtCurrentGraspFrame()
+    {
+        ResolveReferences();
+        if (tcpTarget == null || endEffector == null)
+        {
+            return;
+        }
+
+        tcpTarget.rotation = GetToolRotationForGraspRotation(GetActualGraspRotation());
+        RotationErrorDegrees = 0.0f;
+        ResetJointDeltaSmoothing();
+    }
+
+    /// <summary>
+    /// 兼容旧调用。新的控制逻辑应调用 <see cref="HoldTargetRotationAtCurrentGraspFrame"/>。
+    /// </summary>
+    public void HoldTargetRotationAtCurrentTool()
+    {
+        HoldTargetRotationAtCurrentGraspFrame();
+    }
+
     private void Awake()
     {
         ResolveReferences();
@@ -202,6 +232,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         minimumJointDeltaDegrees = Mathf.Max(0.0f, minimumJointDeltaDegrees);
         dlsDamping = Mathf.Max(0.0f, dlsDamping);
         dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
+        translationOrientationHoldWeight = Mathf.Max(0.0f, translationOrientationHoldWeight);
         dlsGain = Mathf.Max(0.0f, dlsGain);
         targetStationaryHoldSeconds = Mathf.Max(0.0f, targetStationaryHoldSeconds);
         targetStationaryPositionEpsilon = Mathf.Max(0.0f, targetStationaryPositionEpsilon);
@@ -388,7 +419,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             tcpTarget.position = GetControlPointPosition();
             if (followTargetRotation && endEffector != null)
             {
-                tcpTarget.rotation = endEffector.rotation;
+                HoldTargetRotationAtCurrentGraspFrame();
             }
 
             TcpTargetWorkspaceLimiter workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
@@ -439,7 +470,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         if (snapTargetRotationOnStart)
         {
-            tcpTarget.rotation = endEffector.rotation;
+            HoldTargetRotationAtCurrentGraspFrame();
         }
     }
 
@@ -460,6 +491,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         int jointCount = Mathf.Min(6, jointController.JointCount);
         BeginJointWaypoint(jointCount);
+        if (IsTranslationOrientationHoldActive())
+        {
+            StepStrictTranslationWithLockedOrientation(jointCount);
+            CommitJointWaypoint();
+            return;
+        }
+
         if (solverMode == IkSolverMode.DampedLeastSquares)
         {
             ApplyDampedLeastSquaresStep(jointCount, error);
@@ -491,6 +529,23 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         StepOrientationTowardTarget(jointCount);
         CommitJointWaypoint();
+    }
+
+    private void StepStrictTranslationWithLockedOrientation(int jointCount)
+    {
+        if (PositionError > positionTolerance)
+        {
+            // 严格模式先只用 CCD 满足位置。与普通 DLS 加权折中不同，
+            // 这里不会让位置误差稀释后续的完整姿态约束。
+            for (int jointIndex = jointCount - 1; jointIndex >= 0; jointIndex--)
+            {
+                ApplyCcdStep(jointIndex);
+            }
+        }
+
+        // 立刻以腕关节抵消底座/肩部的转角；目标为右手 Grip 起始时
+        // 捕获的完整世界四元数，因此夹爪不会跟随底座绕 Z 轴自转。
+        StepOrientationTowardTarget(jointCount);
     }
 
     private void StepTowardReadyPose()
@@ -570,7 +625,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         Vector3 error = tcpTarget.position - GetControlPointPosition();
         PositionError = error.magnitude;
         RotationErrorDegrees = ShouldSolveTargetRotation()
-            ? Quaternion.Angle(endEffector.rotation, tcpTarget.rotation)
+            ? Quaternion.Angle(GetCurrentOrientationFrame(), GetTargetOrientationFrame())
             : 0.0f;
         return error;
     }
@@ -710,7 +765,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         RotationErrorDegrees = rotationErrorRadians.magnitude * Mathf.Rad2Deg;
 
         bool solvePosition = PositionError > positionTolerance;
-        bool solveRotation = allowRotationSolve && RotationErrorDegrees > rotationToleranceDegrees;
+        bool isTranslationOrientationHold = IsTranslationOrientationHoldActive();
+        bool solveRotation = allowRotationSolve
+            && (isTranslationOrientationHold || RotationErrorDegrees > rotationToleranceDegrees);
         if (!solvePosition && !solveRotation)
         {
             return;
@@ -718,7 +775,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         const int taskDimensions = 6;
         float positionWeight = solvePosition ? 1.0f : 0.0f;
-        float rotationWeight = solveRotation ? Mathf.Max(0.0f, dlsOrientationWeight) : 0.0f;
+        float rotationWeight = solveRotation
+            ? (isTranslationOrientationHold
+                ? Mathf.Max(dlsOrientationWeight, translationOrientationHoldWeight)
+                : Mathf.Max(0.0f, dlsOrientationWeight))
+            : 0.0f;
         float[,] jacobian = new float[taskDimensions, jointCount];
         Vector3 controlPoint = GetControlPointPosition();
         int firstWristIndex = Mathf.Max(0, jointCount - wristJointCount);
@@ -804,7 +865,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return Vector3.zero;
         }
 
-        Quaternion rotationError = tcpTarget.rotation * Quaternion.Inverse(endEffector.rotation);
+        Quaternion rotationError = GetTargetOrientationFrame()
+            * Quaternion.Inverse(GetCurrentOrientationFrame());
         rotationError.ToAngleAxis(out float errorAngle, out Vector3 errorAxis);
         if (errorAngle > 180.0f)
         {
@@ -857,6 +919,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         return true;
+    }
+
+    private bool IsTranslationOrientationHoldActive()
+    {
+        return velocityTeleop != null
+            && velocityTeleop.IsPositionClutched
+            && !velocityTeleop.IsRotationClutched;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)
@@ -980,13 +1049,15 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return;
         }
 
-        RotationErrorDegrees = Quaternion.Angle(endEffector.rotation, tcpTarget.rotation);
+        Quaternion currentOrientation = GetCurrentOrientationFrame();
+        Quaternion targetOrientation = GetTargetOrientationFrame();
+        RotationErrorDegrees = Quaternion.Angle(currentOrientation, targetOrientation);
         if (RotationErrorDegrees <= rotationToleranceDegrees)
         {
             return;
         }
 
-        Quaternion rotationError = tcpTarget.rotation * Quaternion.Inverse(endEffector.rotation);
+        Quaternion rotationError = targetOrientation * Quaternion.Inverse(currentOrientation);
         rotationError.ToAngleAxis(out float errorAngle, out Vector3 errorAxis);
         if (errorAngle > 180.0f)
         {
@@ -1074,6 +1145,45 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         return endEffector != null ? endEffector.position : transform.position;
+    }
+
+    /// <summary>
+    /// 返回用于 IK 姿态误差的当前任务坐标系。
+    /// 启用时该坐标系的前向轴是“夹爪基座 -> 两指中心”的抓取方向，
+    /// 上向轴由两指连线确定，因此会同时约束朝下方向和两指的朝向。
+    /// </summary>
+    private Quaternion GetCurrentOrientationFrame()
+    {
+        if (usePhysicalGraspFrameForOrientation)
+        {
+            return GetActualGraspRotation();
+        }
+
+        return endEffector != null ? endEffector.rotation : Quaternion.identity;
+    }
+
+    /// <summary>
+    /// 将 TcpTarget 中保存的 tool0 旋转转换为相同语义下的抓取坐标系旋转。
+    /// 这样位置和姿态都以两指中心任务帧为准，避免混用 TCP 位置与 tool0 轴。
+    /// </summary>
+    private Quaternion GetTargetOrientationFrame()
+    {
+        if (tcpTarget == null)
+        {
+            return Quaternion.identity;
+        }
+
+        if (!usePhysicalGraspFrameForOrientation)
+        {
+            return tcpTarget.rotation;
+        }
+
+        // 首次调用时缓存刚性安装变换 tool0 -> grasp frame。
+        // 该变换由真实模型几何得出，不需要在 Inspector 中猜测或手填轴向。
+        GetActualGraspRotation();
+        return hasToolToGraspRotation
+            ? tcpTarget.rotation * toolToGraspRotation
+            : tcpTarget.rotation;
     }
 
     /// <summary>

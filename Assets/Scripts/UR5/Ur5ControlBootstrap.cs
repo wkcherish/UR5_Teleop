@@ -18,6 +18,24 @@ public class Ur5ControlBootstrap : MonoBehaviour
     public bool disablePoseIkWhenVelocityTeleopEnabled = false;
     public bool addUrScriptSpeedlClient = true;
 
+    [Header("Quest 平移速度配置")]
+    [Tooltip("右手位移映射到 TCP 的比例。增大后相同手部移动距离会产生更大的 TCP 位移。")]
+    [Range(0.5f, 4.0f)] public float questTranslationScale = 2.60f;
+    [Tooltip("Unity 中 TCP 预览的最高平移速度（米/秒）。这不改变真机 RTDE 安全限速。")]
+    [Range(0.05f, 0.60f)] public float questPreviewMaxLinearSpeed = 0.45f;
+    [Tooltip("TcpTarget 相对实际两指中心允许的最大超前距离（米）。较大值更灵敏，但视觉超前也更明显。")]
+    [Range(0.01f, 0.08f)] public float questMaximumPreviewLeadMeters = 0.035f;
+    [Tooltip("仅用于 Unity speedl 影子命令的线速度上限（米/秒）；真机实际限速由 Fedora 端安全配置决定。")]
+    [Range(0.05f, 0.30f)] public float questCommandMaxLinearSpeed = 0.18f;
+    [Tooltip("线速度变化上限（米/秒²）。增大后起停更快，仍保留平滑滤波。")]
+    [Range(0.10f, 1.20f)] public float questCommandMaxLinearAcceleration = 0.60f;
+    [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
+    [Range(0.50f, 3.00f)] public float questMaxJointStepDegrees = 2.20f;
+
+    [Header("Passthrough 显示")]
+    [Tooltip("默认隐藏 Unity 虚拟手柄，直接使用 Passthrough 中可见的真实 Quest 手柄。不会影响控制输入或遥测。")]
+    public bool showVirtualControllersInPassthrough = false;
+
     [Header("Quest UDP Shadow Telemetry")]
     [Tooltip("Sends raw Quest controller telemetry to the DG-VLA PC for read-only shadow logging. This never enables or commands the real robot.")]
     public bool enableQuestUdpShadowTelemetry;
@@ -227,23 +245,27 @@ public class Ur5ControlBootstrap : MonoBehaviour
         // reaches the object during a grasp.
         follower.useGripperPadCenter = true;
         follower.usePadGeometryCenter = true;
+        // 姿态与位置统一以两指中心抓取坐标系计算，避免 tool0 轴约定导致夹爪偏航。
+        follower.usePhysicalGraspFrameForOrientation = true;
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 1.45f;
+        follower.maxJointStepDegrees = questMaxJointStepDegrees;
         follower.minimumJointDeltaDegrees = 0.015f;
-        follower.maximumCommandLeadDegrees = 6.00f;
+        follower.maximumCommandLeadDegrees = 9.00f;
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.016f;
-        follower.dlsDamping = 0.32f;
+        follower.dlsDamping = 0.18f;
         // Keep the calibrated grasp attitude during right-hand translation.
         // The wrist is intentionally favored over shoulder/elbow changes.
         follower.dlsOrientationWeight = 1.50f;
-        follower.dlsGain = 0.46f;
+        follower.translationOrientationHoldWeight = 3.00f;
+        follower.dlsGain = 0.85f;
         follower.proximalOrientationWeight = 0.05f;
-        follower.jointDeltaSmoothing = 0.20f;
-        follower.rotationToleranceDegrees = 0.45f;
+        follower.jointDeltaSmoothing = 0.10f;
+        follower.rotationToleranceDegrees = 0.03f;
         follower.rotationBlend = 0.70f;
         follower.maxWristStepDegrees = 3.00f;
+        // 右手仅平移时仍保持当前工具姿态约束，避免位置 IK 为求解位移而让夹爪上翘。
         follower.suppressRotationOnlyIkDuringPositionControl = false;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
@@ -315,12 +337,9 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.controllerPositionFilterSharpness = 16.0f;
         velocityTeleop.linearDeadbandMeters = 0.005f;
         velocityTeleop.angularDeadbandDegrees = 2.5f;
-        velocityTeleop.relativePreviewPositionScale = 2.40f;
         velocityTeleop.relativePreviewRotationScale = 0.80f;
-        velocityTeleop.previewMaxLinearSpeed = 0.35f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
         velocityTeleop.limitPreviewLeadToActualTcp = true;
-        velocityTeleop.maximumPreviewLeadMeters = 0.025f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
         velocityTeleop.snapGraspApproachToVertical = true;
@@ -333,9 +352,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
         velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
-        velocityTeleop.linearSpeedGain = 1.20f;
-        velocityTeleop.maxLinearSpeed = 0.14f;
-        velocityTeleop.maxLinearAcceleration = 0.40f;
+        ApplyQuestTeleopSpeedProfile(velocityTeleop);
         velocityTeleop.angularSpeedGain = 1.30f;
         velocityTeleop.maxAngularSpeedRadiansPerSecond = 4.00f;
         velocityTeleop.maxAngularAcceleration = 10.00f;
@@ -350,6 +367,25 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
             velocityTeleop.speedlClient = speedlClient;
         }
+    }
+
+    /// <summary>
+    /// 将 Inspector 中的 Quest 平移速度配置集中应用到控制器。
+    /// 统一入口可避免自动引导脚本覆盖操作者在 Inspector 中的速度设置。
+    /// </summary>
+    public void ApplyQuestTeleopSpeedProfile(Ur5CartesianVelocityTeleopController velocityTeleop)
+    {
+        if (velocityTeleop == null)
+        {
+            return;
+        }
+
+        velocityTeleop.relativePreviewPositionScale = questTranslationScale;
+        velocityTeleop.previewMaxLinearSpeed = questPreviewMaxLinearSpeed;
+        velocityTeleop.maximumPreviewLeadMeters = questMaximumPreviewLeadMeters;
+        velocityTeleop.linearSpeedGain = 1.20f;
+        velocityTeleop.maxLinearSpeed = questCommandMaxLinearSpeed;
+        velocityTeleop.maxLinearAcceleration = questCommandMaxLinearAcceleration;
     }
 
     private bool IsRealRobotOutputEnabled()
@@ -477,6 +513,14 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         controllerVisualizer.xrOrigin = FindXrOrigin();
+        controllerVisualizer.SetVirtualControllerVisibility(
+            !IsPassthroughEnabled() || showVirtualControllersInPassthrough);
+    }
+
+    private bool IsPassthroughEnabled()
+    {
+        Transform xrOrigin = FindXrOrigin();
+        return xrOrigin != null && xrOrigin.GetComponent("OVRPassthroughLayer") != null;
     }
 
     private void ConfigureRecorder(
