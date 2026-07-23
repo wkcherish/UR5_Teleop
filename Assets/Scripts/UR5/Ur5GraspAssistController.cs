@@ -9,6 +9,7 @@ public class Ur5GraspAssistController : MonoBehaviour
         Idle,
         MoveToPreGrasp,
         MoveToGrasp,
+        SettleAtGrasp,
         CloseGripper,
         Lift,
         Complete
@@ -41,14 +42,28 @@ public class Ur5GraspAssistController : MonoBehaviour
     [Header("Pick Sequence")]
     public Vector3 approachDirectionWorld = Vector3.up;
     public float preGraspHeight = 0.12f;
+    [Tooltip("Place the two-pad TCP at the selected object's bounds center for a parallel-jaw grasp. Disable only when a known grasp point is above the center.")]
+    public bool alignPadCenterToObjectCenter = true;
+    [Tooltip("Calibration offset from the selected object's center along the retreat/approach direction. Positive values move the pad center above the object center.")]
+    public float padCenterOffsetAlongApproach = 0.0f;
     public float graspClearance = 0.015f;
     public float liftHeight = 0.16f;
     public float assistMoveSpeed = 0.16f;
+    [Tooltip("Final descent speed only. Pre-grasp and lift continue to use assistMoveSpeed.")]
+    public float finalApproachSpeed = 0.035f;
     [Tooltip("Maximum Cartesian acceleration for each planned segment. This removes abrupt starts/stops without changing the straight-line waypoint path.")]
     public float assistMoveAcceleration = 0.45f;
     public float assistRotationSpeedDegreesPerSecond = 180.0f;
     public float waypointTolerance = 0.012f;
+    [Tooltip("Actual two-pad TCP tolerance for the pre-grasp and lift stages.")]
+    public float transitActualPositionTolerance = 0.008f;
+    [Tooltip("Actual two-pad TCP tolerance required before closing the gripper.")]
+    public float finalGraspActualPositionTolerance = 0.0015f;
     public float actualPositionTolerance = 0.025f;
+    [Tooltip("Actual grasp-frame orientation tolerance required before closing the gripper.")]
+    public float finalGraspActualRotationToleranceDegrees = 0.35f;
+    [Tooltip("The final target must remain within the precision tolerances for this period before the gripper closes.")]
+    public float finalGraspSettleSeconds = 0.12f;
     public float actualRotationToleranceDegrees = 8.0f;
     public float closeGripperSeconds = 0.45f;
     public bool openGripperOnStart = true;
@@ -141,7 +156,17 @@ public class Ur5GraspAssistController : MonoBehaviour
                 MoveTowardWaypoint(preGraspPosition, sequenceRotation, GraspState.MoveToGrasp);
                 break;
             case GraspState.MoveToGrasp:
-                MoveTowardWaypoint(graspPosition, sequenceRotation, GraspState.CloseGripper);
+                MoveTowardWaypoint(graspPosition, sequenceRotation, GraspState.SettleAtGrasp);
+                break;
+            case GraspState.SettleAtGrasp:
+                HoldTargetPose(graspPosition, sequenceRotation);
+                stateTimer = HasActualTcpReachedTarget(true)
+                    ? stateTimer + Time.fixedDeltaTime
+                    : 0.0f;
+                if (stateTimer >= finalGraspSettleSeconds)
+                {
+                    EnterState(GraspState.CloseGripper);
+                }
                 break;
             case GraspState.CloseGripper:
                 HoldTargetPose(graspPosition, sequenceRotation);
@@ -179,11 +204,16 @@ public class Ur5GraspAssistController : MonoBehaviour
         graspClearance = Mathf.Max(0.0f, graspClearance);
         liftHeight = Mathf.Max(0.0f, liftHeight);
         assistMoveSpeed = Mathf.Max(0.0f, assistMoveSpeed);
+        finalApproachSpeed = Mathf.Max(0.0f, finalApproachSpeed);
         assistMoveAcceleration = Mathf.Max(0.0f, assistMoveAcceleration);
         assistRotationSpeedDegreesPerSecond = Mathf.Max(0.0f, assistRotationSpeedDegreesPerSecond);
         waypointTolerance = Mathf.Max(0.001f, waypointTolerance);
+        transitActualPositionTolerance = Mathf.Max(0.001f, transitActualPositionTolerance);
+        finalGraspActualPositionTolerance = Mathf.Max(0.0005f, finalGraspActualPositionTolerance);
         actualPositionTolerance = Mathf.Max(0.001f, actualPositionTolerance);
         actualRotationToleranceDegrees = Mathf.Max(0.0f, actualRotationToleranceDegrees);
+        finalGraspActualRotationToleranceDegrees = Mathf.Max(0.05f, finalGraspActualRotationToleranceDegrees);
+        finalGraspSettleSeconds = Mathf.Max(0.0f, finalGraspSettleSeconds);
         closeGripperSeconds = Mathf.Max(0.0f, closeGripperSeconds);
         robotBodyClearanceRadius = Mathf.Max(0.0f, robotBodyClearanceRadius);
     }
@@ -265,7 +295,10 @@ public class Ur5GraspAssistController : MonoBehaviour
         float stoppingSpeed = acceleration > 0.0f
             ? Mathf.Sqrt(2.0f * acceleration * remainingDistance)
             : Mathf.Max(0.0f, assistMoveSpeed);
-        float desiredSpeed = Mathf.Min(Mathf.Max(0.0f, assistMoveSpeed), stoppingSpeed);
+        float stageMaximumSpeed = state == GraspState.MoveToGrasp
+            ? Mathf.Max(0.0f, finalApproachSpeed)
+            : Mathf.Max(0.0f, assistMoveSpeed);
+        float desiredSpeed = Mathf.Min(stageMaximumSpeed, stoppingSpeed);
         Vector3 desiredVelocity = remainingDistance > 0.000001f
             ? toWaypoint / remainingDistance * desiredSpeed
             : Vector3.zero;
@@ -298,7 +331,7 @@ public class Ur5GraspAssistController : MonoBehaviour
         tcpTarget.SetPositionAndRotation(nextPosition, nextRotation);
 
         if (Vector3.Distance(tcpTarget.position, waypointPosition) <= waypointTolerance
-            && HasActualTcpReachedTarget())
+            && HasActualTcpReachedTarget(state == GraspState.MoveToGrasp))
         {
             EnterState(nextState);
         }
@@ -312,15 +345,21 @@ public class Ur5GraspAssistController : MonoBehaviour
         tcpTarget.SetPositionAndRotation(clampedPosition, rotation);
     }
 
-    private bool HasActualTcpReachedTarget()
+    private bool HasActualTcpReachedTarget(bool requireFinalGraspPrecision = false)
     {
         if (tcpFollower == null)
         {
             return true;
         }
 
-        return tcpFollower.PositionError <= actualPositionTolerance
-            && tcpFollower.RotationErrorDegrees <= actualRotationToleranceDegrees;
+        float positionTolerance = requireFinalGraspPrecision
+            ? finalGraspActualPositionTolerance
+            : transitActualPositionTolerance;
+        float rotationTolerance = requireFinalGraspPrecision
+            ? finalGraspActualRotationToleranceDegrees
+            : actualRotationToleranceDegrees;
+        return tcpFollower.PositionError <= positionTolerance
+            && tcpFollower.RotationErrorDegrees <= rotationTolerance;
     }
 
     private void EnterState(GraspState nextState)
@@ -544,8 +583,10 @@ public class Ur5GraspAssistController : MonoBehaviour
     {
         Vector3 approachDirection = GetApproachDirection();
         Vector3 topPoint = GetBoundsSurfacePoint(selectedTargetBounds, approachDirection);
-        graspPosition = topPoint + approachDirection * graspClearance;
-        preGraspPosition = topPoint + approachDirection * preGraspHeight;
+        graspPosition = alignPadCenterToObjectCenter
+            ? selectedTargetBounds.center + approachDirection * padCenterOffsetAlongApproach
+            : topPoint + approachDirection * graspClearance;
+        preGraspPosition = graspPosition + approachDirection * preGraspHeight;
         liftPosition = graspPosition + approachDirection * liftHeight;
 
         if (workspaceLimiter != null)

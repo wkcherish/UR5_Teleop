@@ -19,18 +19,27 @@ public class Ur5ControlBootstrap : MonoBehaviour
     public bool addUrScriptSpeedlClient = true;
 
     [Header("Quest 平移速度配置")]
+    [Tooltip("为已有场景强制使用快速精密控制的最低速度配置。关闭后完全采用下方 Inspector 数值。")]
+    public bool enforceFastQuestMotionProfile = true;
     [Tooltip("右手位移映射到 TCP 的比例。增大后相同手部移动距离会产生更大的 TCP 位移。")]
-    [Range(0.5f, 4.0f)] public float questTranslationScale = 2.60f;
+    [Range(0.5f, 4.5f)] public float questTranslationScale = 3.10f;
     [Tooltip("Unity 中 TCP 预览的最高平移速度（米/秒）。这不改变真机 RTDE 安全限速。")]
-    [Range(0.05f, 0.60f)] public float questPreviewMaxLinearSpeed = 0.45f;
+    [Range(0.05f, 0.85f)] public float questPreviewMaxLinearSpeed = 0.70f;
     [Tooltip("TcpTarget 相对实际两指中心允许的最大超前距离（米）。较大值更灵敏，但视觉超前也更明显。")]
-    [Range(0.01f, 0.08f)] public float questMaximumPreviewLeadMeters = 0.035f;
+    [Range(0.01f, 0.10f)] public float questMaximumPreviewLeadMeters = 0.075f;
     [Tooltip("仅用于 Unity speedl 影子命令的线速度上限（米/秒）；真机实际限速由 Fedora 端安全配置决定。")]
-    [Range(0.05f, 0.30f)] public float questCommandMaxLinearSpeed = 0.18f;
+    [Range(0.05f, 0.50f)] public float questCommandMaxLinearSpeed = 0.26f;
     [Tooltip("线速度变化上限（米/秒²）。增大后起停更快，仍保留平滑滤波。")]
-    [Range(0.10f, 1.20f)] public float questCommandMaxLinearAcceleration = 0.60f;
+    [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.20f;
     [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
-    [Range(0.50f, 3.00f)] public float questMaxJointStepDegrees = 2.20f;
+    [Range(0.50f, 4.00f)] public float questMaxJointStepDegrees = 2.80f;
+
+    public float EffectiveQuestTranslationScale => GetFastProfileMinimum(questTranslationScale, 3.10f);
+    public float EffectiveQuestPreviewMaxLinearSpeed => GetFastProfileMinimum(questPreviewMaxLinearSpeed, 0.70f);
+    public float EffectiveQuestMaximumPreviewLeadMeters => GetFastProfileMinimum(questMaximumPreviewLeadMeters, 0.075f);
+    public float EffectiveQuestCommandMaxLinearSpeed => GetFastProfileMinimum(questCommandMaxLinearSpeed, 0.26f);
+    public float EffectiveQuestCommandMaxLinearAcceleration => GetFastProfileMinimum(questCommandMaxLinearAcceleration, 1.20f);
+    public float EffectiveQuestMaxJointStepDegrees => GetFastProfileMinimum(questMaxJointStepDegrees, 2.80f);
 
     [Header("Passthrough 显示")]
     [Tooltip("默认隐藏 Unity 虚拟手柄，直接使用 Passthrough 中可见的真实 Quest 手柄。不会影响控制输入或遥测。")]
@@ -183,16 +192,82 @@ public class Ur5ControlBootstrap : MonoBehaviour
         return jointController;
     }
 
-    private void ApplyStableJointDefaults(Ur5ArticulationJointController jointController)
+    public static void ApplyStableJointDefaults(Ur5ArticulationJointController jointController)
     {
         jointController.stiffness = 12000.0f;
-        jointController.damping = 5200.0f;
+        // 提高物理驱动阻尼以消除末端停止后的弹簧感，不降低最高关节速度。
+        jointController.damping = 7000.0f;
         jointController.forceLimit = 30000.0f;
         jointController.smoothDriveTargets = true;
-        jointController.maxDriveSpeedDegreesPerSecond = 240.0f;
-        jointController.maxDriveAccelerationDegreesPerSecondSquared = 7000.0f;
+        jointController.maxDriveSpeedDegreesPerSecond = 480.0f;
+        jointController.maxDriveAccelerationDegreesPerSecondSquared = 18000.0f;
         jointController.driveTargetToleranceDegrees = 0.005f;
+        // IK 目标和物理关节之间保留很小、受控的领先量，防止高刚度 Drive 形成弹簧摆动。
+        jointController.limitDriveTargetLeadFromMeasuredJoint = true;
+        // 仍以实际关节反馈限制命令领先量；适当放宽受控窗口，避免四层限幅
+        // 叠加后出现“推一下才走、走一下又停”的卡顿感。
+        jointController.maximumDriveTargetLeadDegrees = 6.0f;
+        jointController.maximumWristDriveTargetLeadDegrees = 2.5f;
+        jointController.readyPoseMaximumDriveTargetLeadDegrees = 16.0f;
+        jointController.readyPoseMaximumWristDriveTargetLeadDegrees = 7.0f;
         jointController.ApplyConfiguredDriveSettings();
+    }
+
+    /// <summary>
+    /// Shared follower profile for Editor and auto-bootstrapped Quest scenes.
+    /// Per-scene code may override only the configured IK joint step afterward.
+    /// </summary>
+    public static void ApplyDefaultFollowerProfile(Ur5TcpTargetFollower follower)
+    {
+        if (follower == null)
+        {
+            return;
+        }
+
+        follower.useGripperPadCenter = true;
+        follower.usePadGeometryCenter = true;
+        follower.usePhysicalGraspFrameForOrientation = true;
+        follower.gripperBase = null;
+        follower.positionTolerance = 0.008f;
+        follower.maxJointStepDegrees = 2.80f;
+        follower.minimumJointDeltaDegrees = 0.015f;
+        follower.maximumCommandLeadDegrees = 6.00f;
+        follower.useTimedJointAssignments = true;
+        follower.jointAssignmentIntervalSeconds = 0.0f;
+        follower.dlsDamping = 0.16f;
+        follower.dlsOrientationWeight = 1.50f;
+        follower.translationOrientationHoldWeight = 8.00f;
+        follower.dlsGain = 0.95f;
+        follower.proximalOrientationWeight = 0.05f;
+        follower.jointDeltaSmoothing = 0.05f;
+        follower.enableStationaryDlsDamping = false;
+        follower.rotationToleranceDegrees = 0.03f;
+        follower.rotationBlend = 0.70f;
+        follower.maxWristStepDegrees = 4.00f;
+        follower.graspAssistPositionTolerance = 0.0015f;
+        follower.graspAssistRotationToleranceDegrees = 0.35f;
+        follower.enablePrecisionAssemblyTracking = true;
+        follower.precisionAssemblyPositionTolerance = 0.0010f;
+        follower.precisionAssemblyRotationToleranceDegrees = 0.25f;
+        follower.precisionAssemblyTargetChangeEpsilonMeters = 0.00015f;
+        follower.precisionAssemblyTargetChangeEpsilonDegrees = 0.04f;
+        follower.precisionAssemblySettledPositionError = 0.0012f;
+        follower.precisionAssemblySettledRotationErrorDegrees = 0.30f;
+        follower.suppressRotationOnlyIkDuringPositionControl = false;
+        follower.finishVelocityTargetAfterRelease = false;
+        follower.velocityReleasePositionTolerance = 0.003f;
+        follower.velocityReleaseRotationToleranceDegrees = 0.50f;
+        follower.velocityReleaseSettleTimeoutSeconds = 2.0f;
+        follower.holdJointPoseWhenTargetSettled = true;
+        follower.targetStationaryHoldSeconds = 0.12f;
+        follower.targetStationaryPositionEpsilon = 0.0015f;
+        follower.targetStationaryRotationEpsilonDegrees = 0.30f;
+        follower.settledPositionError = 0.010f;
+        follower.settledRotationErrorDegrees = 1.50f;
+        follower.enableReadyPose = true;
+        follower.readyPoseJointDegrees = new[] { 0.0f, -90.0f, 90.0f, -90.0f, -90.0f, 0.0f };
+        follower.readyPoseMaxJointSpeedDegreesPerSecond = 320.0f;
+        follower.readyPoseJointToleranceDegrees = 1.5f;
     }
 
     private Ur5JointTrajectoryPlayer ConfigureJointTrajectoryPlayer(Ur5ArticulationJointController jointController)
@@ -212,8 +287,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         trajectoryPlayer.jointController = jointController;
         trajectoryPlayer.play = true;
         trajectoryPlayer.queueMode = Ur5JointTrajectoryPlayer.QueueMode.LatestOnly;
-        trajectoryPlayer.jointAssignmentIntervalSeconds = 0.016f;
-        trajectoryPlayer.applyDirectlyToDrive = true;
+        trajectoryPlayer.jointAssignmentIntervalSeconds = 0.0f;
+        trajectoryPlayer.applyDirectlyToDrive = false;
         trajectoryPlayer.clampToDriveLimits = true;
         trajectoryPlayer.maxQueuedWaypoints = 1;
         return trajectoryPlayer;
@@ -240,49 +315,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
         follower.graspAssist = GetComponent<Ur5GraspAssistController>();
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
-        follower.finishVelocityTargetAfterRelease = true;
-        follower.velocityReleasePositionTolerance = 0.003f;
-        follower.velocityReleaseRotationToleranceDegrees = 0.50f;
-        follower.velocityReleaseSettleTimeoutSeconds = 2.0f;
-        // The task-space target is the midpoint of the two Robotiq pads,
-        // rather than the wrist flange. This is the point that actually
-        // reaches the object during a grasp.
-        follower.useGripperPadCenter = true;
-        follower.usePadGeometryCenter = true;
-        // 姿态与位置统一以两指中心抓取坐标系计算，避免 tool0 轴约定导致夹爪偏航。
-        follower.usePhysicalGraspFrameForOrientation = true;
-        follower.gripperBase = null;
-        follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = questMaxJointStepDegrees;
-        follower.minimumJointDeltaDegrees = 0.015f;
-        follower.maximumCommandLeadDegrees = 9.00f;
-        follower.useTimedJointAssignments = true;
-        follower.jointAssignmentIntervalSeconds = 0.016f;
-        follower.dlsDamping = 0.18f;
-        // Keep the calibrated grasp attitude during right-hand translation.
-        // The wrist is intentionally favored over shoulder/elbow changes.
-        follower.dlsOrientationWeight = 1.50f;
-        follower.translationOrientationHoldWeight = 3.00f;
-        follower.dlsGain = 0.85f;
-        follower.proximalOrientationWeight = 0.05f;
-        follower.jointDeltaSmoothing = 0.10f;
-        follower.rotationToleranceDegrees = 0.03f;
-        follower.rotationBlend = 0.70f;
-        follower.maxWristStepDegrees = 3.00f;
-        // 右手仅平移时仍保持当前工具姿态约束，避免位置 IK 为求解位移而让夹爪上翘。
-        follower.suppressRotationOnlyIkDuringPositionControl = false;
-        follower.holdJointPoseWhenTargetSettled = true;
-        follower.targetStationaryHoldSeconds = 0.12f;
-        follower.targetStationaryPositionEpsilon = 0.0015f;
-        follower.targetStationaryRotationEpsilonDegrees = 0.30f;
-        follower.settledPositionError = 0.010f;
-        follower.settledRotationErrorDegrees = 1.50f;
-        // Standard UR5 gripper-down pre-grasp configuration. It is invoked by
-        // holding X on the left controller, and may be fine-tuned in Inspector.
-        follower.enableReadyPose = true;
-        follower.readyPoseJointDegrees = new[] { 0.0f, -90.0f, 90.0f, -90.0f, -90.0f, 0.0f };
-        follower.readyPoseMaxJointSpeedDegreesPerSecond = 40.0f;
-        follower.readyPoseJointToleranceDegrees = 1.5f;
+        ApplyDefaultFollowerProfile(follower);
+        follower.maxJointStepDegrees = EffectiveQuestMaxJointStepDegrees;
 
         Ur5ActualTcpMarker actualMarker = tcpTarget.GetComponent<Ur5ActualTcpMarker>();
         if (actualMarker == null)
@@ -322,41 +356,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.workspaceLimiter = tcpTarget != null
             ? tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>()
             : null;
-        velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
-        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
-        velocityTeleop.usePositionGripAsDeadman = true;
-        velocityTeleop.useRotationGripAsDeadman = true;
-        velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        // 右手 Grip 控制 TCP 平移；左手仅在 Grip + 摇杆时绕基座 Y 轴调整夹爪偏航。
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
-        velocityTeleop.rotationJoystickDeadband = 0.12f;
-        velocityTeleop.joystickYawSpeedDegreesPerSecond = 125.0f;
-        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 0.0f;
-        velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
-        // B is reserved for grasp assist, so it must not also roll the TCP.
-        velocityTeleop.useSecondaryButtonForJoystickRoll = false;
-        velocityTeleop.invertJoystickPitch = false;
-        velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
-        velocityTeleop.filterControllerPosition = true;
-        velocityTeleop.controllerPositionJitterDeadbandMeters = 0.0025f;
-        velocityTeleop.controllerPositionFilterSharpness = 16.0f;
-        velocityTeleop.linearDeadbandMeters = 0.005f;
-        velocityTeleop.angularDeadbandDegrees = 2.5f;
-        velocityTeleop.relativePreviewRotationScale = 0.80f;
-        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
-        velocityTeleop.limitPreviewLeadToActualTcp = true;
-        velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
-        velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
-        velocityTeleop.snapGraspApproachToVertical = true;
-        velocityTeleop.verticalApproachSnapDegrees = 32.0f;
-        velocityTeleop.enableLeftPrimarySnapDown = true;
-        velocityTeleop.enableLeftPrimaryReadyPose = true;
-        velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
-        velocityTeleop.enableLeftSecondaryOrientationHold = true;
-        velocityTeleop.enableFineControlButton = true;
-        velocityTeleop.applyFineControlToRelativePreview = true;
-        velocityTeleop.fineLinearSpeedMultiplier = 0.25f;
-        velocityTeleop.fineAngularSpeedMultiplier = 0.25f;
+        ApplyDefaultQuestTeleopProfile(velocityTeleop);
         ApplyQuestTeleopSpeedProfile(velocityTeleop);
         velocityTeleop.angularSpeedGain = 1.30f;
         velocityTeleop.maxAngularSpeedRadiansPerSecond = 4.00f;
@@ -375,6 +375,80 @@ public class Ur5ControlBootstrap : MonoBehaviour
     }
 
     /// <summary>
+    /// Shared XR clutch profile. Both runtime bootstraps call this method so
+    /// Editor and Quest builds use the same controller-to-TCP semantics.
+    /// </summary>
+    public static void ApplyDefaultQuestTeleopProfile(Ur5CartesianVelocityTeleopController velocityTeleop)
+    {
+        if (velocityTeleop == null)
+        {
+            return;
+        }
+
+        velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
+        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
+        velocityTeleop.usePositionGripAsDeadman = true;
+        velocityTeleop.useRotationGripAsDeadman = true;
+        velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
+
+        // A relative clutch maps controller displacement to TCP displacement.
+        // It is intentionally not a joystick-velocity integrator.
+        velocityTeleop.linearDeadbandMeters = 0.002f;
+        velocityTeleop.filterControllerPosition = false;
+        velocityTeleop.controllerPositionJitterDeadbandMeters = 0.0025f;
+        velocityTeleop.controllerPositionFilterSharpness = 16.0f;
+        velocityTeleop.useAdaptiveControllerPositionFilter = false;
+        velocityTeleop.angularDeadbandDegrees = 2.5f;
+        velocityTeleop.relativePreviewPositionScale = 3.10f;
+        velocityTeleop.useProgressivePositionResponse = false;
+        velocityTeleop.precisionPositionScale = 2.80f;
+        velocityTeleop.progressivePositionTransitionMeters = 0.030f;
+        velocityTeleop.relativePreviewRotationScale = 0.80f;
+        velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
+        velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
+        velocityTeleop.useRelativePoseCommandFilter = true;
+        velocityTeleop.relativePoseCommandFilterRetention = 0.25f;
+        velocityTeleop.fineRelativePoseCommandFilterRetention = 0.40f;
+        velocityTeleop.previewMaxLinearSpeed = 0.70f;
+        velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
+        velocityTeleop.limitPreviewLeadToActualTcp = true;
+        velocityTeleop.maximumPreviewLeadMeters = 0.075f;
+        velocityTeleop.useAccelerationLimitedPreviewTrajectory = false;
+        velocityTeleop.freezeRobotWhenPositionHandStops = false;
+
+        // The left stick rotates around the physical center axis of the two pads.
+        velocityTeleop.rotationJoystickDeadband = 0.12f;
+        velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
+        velocityTeleop.joystickPitchSpeedDegreesPerSecond = 0.0f;
+        velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
+        velocityTeleop.useSecondaryButtonForJoystickRoll = false;
+        velocityTeleop.enableLeftSecondaryPoseRotation = false;
+        velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
+
+        // Precision is the default XR behavior. The old thumbstick-click mode
+        // remains available for backward compatibility but is disabled here.
+        velocityTeleop.enableFineControlButton = false;
+        velocityTeleop.applyFineControlToRelativePreview = false;
+        velocityTeleop.fineLinearSpeedMultiplier = 1.00f;
+        velocityTeleop.fineAngularSpeedMultiplier = 1.00f;
+
+        velocityTeleop.snapToZeroOnRelease = true;
+        velocityTeleop.snapGraspApproachToVertical = true;
+        velocityTeleop.verticalApproachSnapDegrees = 32.0f;
+        velocityTeleop.enableLeftPrimarySnapDown = true;
+        velocityTeleop.enableLeftPrimaryReadyPose = true;
+        velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
+        velocityTeleop.enableLeftSecondaryOrientationHold = true;
+        velocityTeleop.linearSpeedGain = 1.20f;
+        velocityTeleop.maxLinearSpeed = 0.26f;
+        velocityTeleop.maxLinearAcceleration = 1.20f;
+        velocityTeleop.angularSpeedGain = 1.30f;
+        velocityTeleop.maxAngularSpeedRadiansPerSecond = 4.00f;
+        velocityTeleop.maxAngularAcceleration = 10.00f;
+    }
+
+    /// <summary>
     /// 将 Inspector 中的 Quest 平移速度配置集中应用到控制器。
     /// 统一入口可避免自动引导脚本覆盖操作者在 Inspector 中的速度设置。
     /// </summary>
@@ -385,12 +459,19 @@ public class Ur5ControlBootstrap : MonoBehaviour
             return;
         }
 
-        velocityTeleop.relativePreviewPositionScale = questTranslationScale;
-        velocityTeleop.previewMaxLinearSpeed = questPreviewMaxLinearSpeed;
-        velocityTeleop.maximumPreviewLeadMeters = questMaximumPreviewLeadMeters;
+        velocityTeleop.relativePreviewPositionScale = EffectiveQuestTranslationScale;
+        velocityTeleop.previewMaxLinearSpeed = EffectiveQuestPreviewMaxLinearSpeed;
+        velocityTeleop.maximumPreviewLeadMeters = EffectiveQuestMaximumPreviewLeadMeters;
         velocityTeleop.linearSpeedGain = 1.20f;
-        velocityTeleop.maxLinearSpeed = questCommandMaxLinearSpeed;
-        velocityTeleop.maxLinearAcceleration = questCommandMaxLinearAcceleration;
+        velocityTeleop.maxLinearSpeed = EffectiveQuestCommandMaxLinearSpeed;
+        velocityTeleop.maxLinearAcceleration = EffectiveQuestCommandMaxLinearAcceleration;
+    }
+
+    private float GetFastProfileMinimum(float configuredValue, float fastProfileMinimum)
+    {
+        return enforceFastQuestMotionProfile
+            ? Mathf.Max(configuredValue, fastProfileMinimum)
+            : configuredValue;
     }
 
     private bool IsRealRobotOutputEnabled()
@@ -484,12 +565,19 @@ public class Ur5ControlBootstrap : MonoBehaviour
         graspAssist.startWithPrimaryButton = true;
         graspAssist.startWithSecondaryButton = true;
         graspAssist.preGraspHeight = 0.12f;
+        graspAssist.alignPadCenterToObjectCenter = true;
+        graspAssist.padCenterOffsetAlongApproach = 0.0f;
         graspAssist.graspClearance = 0.015f;
         graspAssist.liftHeight = 0.16f;
-        graspAssist.assistMoveSpeed = 0.10f;
-        graspAssist.assistMoveAcceleration = 0.45f;
+        graspAssist.assistMoveSpeed = 0.18f;
+        graspAssist.finalApproachSpeed = 0.050f;
+        graspAssist.assistMoveAcceleration = 0.85f;
         graspAssist.waypointTolerance = 0.012f;
-        graspAssist.actualPositionTolerance = 0.025f;
+        graspAssist.transitActualPositionTolerance = 0.008f;
+        graspAssist.finalGraspActualPositionTolerance = 0.0015f;
+        graspAssist.finalGraspActualRotationToleranceDegrees = 0.35f;
+        graspAssist.finalGraspSettleSeconds = 0.12f;
+        graspAssist.actualPositionTolerance = 0.008f;
         graspAssist.robotBodyClearanceRadius = 0.075f;
         // All grasp stages use the calibrated downward tool attitude instead
         // of inheriting any transient manual pose.

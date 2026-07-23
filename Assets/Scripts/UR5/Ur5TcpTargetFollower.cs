@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Serialization;
 
 [DefaultExecutionOrder(-50)]
 public class Ur5TcpTargetFollower : MonoBehaviour
@@ -53,7 +54,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public bool adaptivePositionSpeed = true;
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Prevents CCD from queueing large target jumps before the drive has applied the prior correction.")]
-    public float maximumCommandLeadDegrees = 6.00f;
+    public float maximumCommandLeadDegrees = 2.00f;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
@@ -76,6 +77,12 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
     [Range(0.0f, 0.95f)] public float jointDeltaSmoothing = 0.45f;
 
+    [Header("静止抗抖")]
+    [Tooltip("TCP 目标保持不动一小段时间后，降低 IK 修正增益，抑制末端到位后的来回摆动。")]
+    public bool enableStationaryDlsDamping = false;
+    public float stationaryDampingStartSeconds = 0.06f;
+    [Range(0.05f, 1.0f)] public float stationaryDlsGainMultiplier = 0.45f;
+
     [Header("End Effector Orientation")]
     public bool followTargetRotation = true;
     [Range(1, 3)] public int wristJointCount = 3;
@@ -84,6 +91,33 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public float maxWristStepDegrees = 2.00f;
     [Tooltip("When only the right controller is translating, fully pause orientation IK so wrist joints do not twitch while chasing pose noise.")]
     public bool suppressRotationOnlyIkDuringPositionControl = true;
+
+    [Header("Grasp Assist Precision")]
+    [Tooltip("Only while grasp assist is active, continue IK down to this two-pad TCP position error before closing the gripper.")]
+    public float graspAssistPositionTolerance = 0.0015f;
+    [Tooltip("Only while grasp assist is active, continue IK down to this grasp-frame orientation error before closing the gripper.")]
+    public float graspAssistRotationToleranceDegrees = 0.35f;
+
+    [Header("Precision Assembly Tracking")]
+    [Tooltip("Applies millimetre-level convergence whenever XR teleoperation owns the TCP. It is not a separate operator mode.")]
+    [FormerlySerializedAs("enableFineAssemblyControl")]
+    public bool enablePrecisionAssemblyTracking = true;
+    [Tooltip("Two-pad TCP error required during manual XR assembly control. Keep this above the effective Articulation and model resolution.")]
+    [FormerlySerializedAs("fineAssemblyPositionTolerance")]
+    public float precisionAssemblyPositionTolerance = 0.0010f;
+    [Tooltip("Physical grasp-frame rotation error required during manual XR assembly control.")]
+    [FormerlySerializedAs("fineAssemblyRotationToleranceDegrees")]
+    public float precisionAssemblyRotationToleranceDegrees = 0.25f;
+    [Tooltip("Target must move farther than this to release the settled-pose hold during manual XR assembly control.")]
+    [FormerlySerializedAs("fineAssemblyTargetChangeEpsilonMeters")]
+    public float precisionAssemblyTargetChangeEpsilonMeters = 0.00015f;
+    [FormerlySerializedAs("fineAssemblyTargetChangeEpsilonDegrees")]
+    public float precisionAssemblyTargetChangeEpsilonDegrees = 0.04f;
+    [Tooltip("Pose error at which a stationary manual XR target may lock its measured joint pose.")]
+    [FormerlySerializedAs("fineAssemblySettledPositionError")]
+    public float precisionAssemblySettledPositionError = 0.0012f;
+    [FormerlySerializedAs("fineAssemblySettledRotationErrorDegrees")]
+    public float precisionAssemblySettledRotationErrorDegrees = 0.30f;
 
     [Header("Quest Idle Hold")]
     public Quest3TcpTargetController questController;
@@ -96,8 +130,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public bool holdJointPoseWhenQuestReleased = true;
 
     [Header("精细定位释放收敛")]
-    [Tooltip("松开 Quest Grip 后，先让 IK 收敛到最后一个 TCP 目标，再冻结关节；避免目标点被提前截断。")]
-    public bool finishVelocityTargetAfterRelease = true;
+    [Tooltip("松开 Quest Grip 后是否继续收敛旧 TCP 目标。数据采集默认关闭，确保松手立即停止。")]
+    public bool finishVelocityTargetAfterRelease = false;
     public float velocityReleasePositionTolerance = 0.003f;
     public float velocityReleaseRotationToleranceDegrees = 0.50f;
     public float velocityReleaseSettleTimeoutSeconds = 2.0f;
@@ -116,7 +150,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Tooltip("UR5 joint targets in degrees: shoulder pan, shoulder lift, elbow, wrist 1, wrist 2, wrist 3.")]
     public float[] readyPoseJointDegrees = { 0.0f, -90.0f, 90.0f, -90.0f, -90.0f, 0.0f };
     [Tooltip("Maximum change of each ready-pose joint target per second.")]
-    public float readyPoseMaxJointSpeedDegreesPerSecond = 40.0f;
+    public float readyPoseMaxJointSpeedDegreesPerSecond = 80.0f;
     [Tooltip("The move completes only after each measured joint is within this tolerance of its ready target.")]
     public float readyPoseJointToleranceDegrees = 1.5f;
 
@@ -140,6 +174,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool velocityReleaseSettlePending;
     private float velocityReleaseSettleElapsedSeconds;
     private bool isControllerIdleHoldActive;
+    private bool isSettledTargetHoldActive;
     private bool hasLastTargetPose;
     private Vector3 lastTargetPosition;
     private Quaternion lastTargetRotation = Quaternion.identity;
@@ -157,6 +192,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public float RotationErrorDegrees { get; private set; }
     public Vector3 ControlPointPosition => GetControlPointPosition();
     public Quaternion ActualGraspRotation => GetActualGraspRotation();
+    /// <summary>
+    /// Axis passing through the two-pad midpoint and the gripper body. Rotating
+    /// around it changes the jaw alignment without tilting the grasp approach.
+    /// </summary>
+    public Vector3 GripperCenterSymmetryAxisWorld => GetActualGraspRotation() * Vector3.forward;
     public bool IsReadyPoseActive => isReadyPoseActive;
 
     /// <summary>
@@ -244,6 +284,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
         translationOrientationHoldWeight = Mathf.Max(0.0f, translationOrientationHoldWeight);
         dlsGain = Mathf.Max(0.0f, dlsGain);
+        stationaryDampingStartSeconds = Mathf.Max(0.0f, stationaryDampingStartSeconds);
+        stationaryDlsGainMultiplier = Mathf.Clamp(stationaryDlsGainMultiplier, 0.05f, 1.0f);
         targetStationaryHoldSeconds = Mathf.Max(0.0f, targetStationaryHoldSeconds);
         targetStationaryPositionEpsilon = Mathf.Max(0.0f, targetStationaryPositionEpsilon);
         targetStationaryRotationEpsilonDegrees = Mathf.Max(0.0f, targetStationaryRotationEpsilonDegrees);
@@ -255,11 +297,24 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         velocityReleasePositionTolerance = Mathf.Max(0.0f, velocityReleasePositionTolerance);
         velocityReleaseRotationToleranceDegrees = Mathf.Max(0.0f, velocityReleaseRotationToleranceDegrees);
         velocityReleaseSettleTimeoutSeconds = Mathf.Max(0.0f, velocityReleaseSettleTimeoutSeconds);
+        graspAssistPositionTolerance = Mathf.Max(0.0005f, graspAssistPositionTolerance);
+        graspAssistRotationToleranceDegrees = Mathf.Max(0.05f, graspAssistRotationToleranceDegrees);
+        precisionAssemblyPositionTolerance = Mathf.Max(0.0005f, precisionAssemblyPositionTolerance);
+        precisionAssemblyRotationToleranceDegrees = Mathf.Max(0.05f, precisionAssemblyRotationToleranceDegrees);
+        precisionAssemblyTargetChangeEpsilonMeters = Mathf.Max(0.00001f, precisionAssemblyTargetChangeEpsilonMeters);
+        precisionAssemblyTargetChangeEpsilonDegrees = Mathf.Max(0.001f, precisionAssemblyTargetChangeEpsilonDegrees);
+        precisionAssemblySettledPositionError = Mathf.Max(0.0005f, precisionAssemblySettledPositionError);
+        precisionAssemblySettledRotationErrorDegrees = Mathf.Max(0.05f, precisionAssemblySettledRotationErrorDegrees);
     }
 
     private void OnDisable()
     {
         isReadyPoseActive = false;
+        if (jointController != null)
+        {
+            jointController.SetReadyPoseDriveLeadProfile(false);
+        }
+        isSettledTargetHoldActive = false;
         ClearTrajectoryQueue();
     }
 
@@ -281,6 +336,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         ClearTrajectoryQueue();
         ResetJointDeltaSmoothing();
+        jointController.SetReadyPoseDriveLeadProfile(true);
         isReadyPoseActive = true;
         return true;
     }
@@ -297,9 +353,48 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         isReadyPoseActive = false;
+        if (jointController != null)
+        {
+            jointController.SetReadyPoseDriveLeadProfile(false);
+        }
         HoldCurrentJointsAndClearTrajectory();
         ResetJointDeltaSmoothing();
         SnapTargetToEndEffector();
+    }
+
+    /// <summary>
+    /// 以当前测得关节角立即冻结机械臂，并将命令 TCP 对齐到实际两指中心。
+    /// 用于速度式遥操作的“手停即停”：不能继续追赶此前尚未到达的 TCP 目标。
+    /// </summary>
+    public void FreezeAtCurrentPose()
+    {
+        ResolveReferences();
+        if (jointController == null || tcpTarget == null || endEffector == null)
+        {
+            return;
+        }
+
+        HoldCurrentJointsAndClearTrajectory();
+        tcpTarget.position = GetControlPointPosition();
+        if (followTargetRotation)
+        {
+            HoldTargetRotationAtCurrentGraspFrame();
+        }
+
+        TcpTargetWorkspaceLimiter workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
+        if (workspaceLimiter != null)
+        {
+            workspaceLimiter.PreserveCurrentTargetPose();
+        }
+
+        hasLastTargetPose = true;
+        lastTargetPosition = tcpTarget.position;
+        lastTargetRotation = tcpTarget.rotation;
+        targetStationaryTime = 0.0f;
+        velocityReleaseSettlePending = false;
+        ResetJointDeltaSmoothing();
+        isSettledTargetHoldActive = true;
+        nextJointAssignmentTime = Time.time;
     }
 
     private void OnDrawGizmos()
@@ -637,6 +732,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         isReadyPoseActive = false;
+        jointController.SetReadyPoseDriveLeadProfile(false);
         ClearTrajectoryQueue();
         ResetJointDeltaSmoothing();
         SnapTargetToEndEffector();
@@ -693,14 +789,17 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         bool targetMoved =
-            Vector3.Distance(lastTargetPosition, tcpTarget.position) > targetStationaryPositionEpsilon
-            || Quaternion.Angle(lastTargetRotation, tcpTarget.rotation) > targetStationaryRotationEpsilonDegrees;
+            Vector3.Distance(lastTargetPosition, tcpTarget.position) > GetTargetStationaryPositionEpsilon()
+            || Quaternion.Angle(lastTargetRotation, tcpTarget.rotation) > GetTargetStationaryRotationEpsilonDegrees();
 
         if (targetMoved)
         {
             lastTargetPosition = tcpTarget.position;
             lastTargetRotation = tcpTarget.rotation;
             targetStationaryTime = 0.0f;
+            // 是否按着 Grip 不能代表 TCP 仍在运动：操作者可以按住 Grip 暂停。
+            // 只有 TCP 目标确实变化，才允许重新开始 IK 跟踪并解除静止锁存。
+            isSettledTargetHoldActive = false;
             return;
         }
 
@@ -716,11 +815,21 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     }
 
     /// <summary>
-    /// 精细定位或刚释放 Grip 的收敛阶段采用毫米级阈值；普通快速移动仍使用
-    /// 原有阈值，从而兼顾装配精度和大范围移动时的平顺性。
+    /// XR 遥操作始终采用毫米级收敛阈值；快速移动由速度、加速度和关节步长
+    /// 决定，而不是通过放宽最终 TCP 误差来换取表观速度。
     /// </summary>
     private float GetActivePositionTolerance()
     {
+        if (graspAssist != null && graspAssist.IsAssistActive)
+        {
+            return Mathf.Min(positionTolerance, graspAssistPositionTolerance);
+        }
+
+        if (IsPrecisionAssemblyTrackingActive())
+        {
+            return Mathf.Min(positionTolerance, precisionAssemblyPositionTolerance);
+        }
+
         return UsesPrecisionTolerance()
             ? Mathf.Min(positionTolerance, velocityReleasePositionTolerance)
             : positionTolerance;
@@ -728,6 +837,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private float GetActiveRotationToleranceDegrees()
     {
+        if (graspAssist != null && graspAssist.IsAssistActive)
+        {
+            return Mathf.Min(rotationToleranceDegrees, graspAssistRotationToleranceDegrees);
+        }
+
+        if (IsPrecisionAssemblyTrackingActive())
+        {
+            return Mathf.Min(rotationToleranceDegrees, precisionAssemblyRotationToleranceDegrees);
+        }
+
         return UsesPrecisionTolerance()
             ? Mathf.Min(rotationToleranceDegrees, velocityReleaseRotationToleranceDegrees)
             : rotationToleranceDegrees;
@@ -735,6 +854,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private float GetActiveSettledPositionError()
     {
+        if (graspAssist != null && graspAssist.IsAssistActive)
+        {
+            return Mathf.Min(settledPositionError, graspAssistPositionTolerance);
+        }
+
+        if (IsPrecisionAssemblyTrackingActive())
+        {
+            return Mathf.Min(settledPositionError, precisionAssemblySettledPositionError);
+        }
+
         return UsesPrecisionTolerance()
             ? Mathf.Min(settledPositionError, velocityReleasePositionTolerance)
             : settledPositionError;
@@ -742,6 +871,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private float GetActiveSettledRotationErrorDegrees()
     {
+        if (graspAssist != null && graspAssist.IsAssistActive)
+        {
+            return Mathf.Min(settledRotationErrorDegrees, graspAssistRotationToleranceDegrees);
+        }
+
+        if (IsPrecisionAssemblyTrackingActive())
+        {
+            return Mathf.Min(settledRotationErrorDegrees, precisionAssemblySettledRotationErrorDegrees);
+        }
+
         return UsesPrecisionTolerance()
             ? Mathf.Min(settledRotationErrorDegrees, velocityReleaseRotationToleranceDegrees)
             : settledRotationErrorDegrees;
@@ -750,17 +889,46 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool UsesPrecisionTolerance()
     {
         return velocityReleaseSettlePending
-            || (velocityTeleop != null && velocityTeleop.IsFinePositionControlActive);
+            || IsPrecisionAssemblyTrackingActive();
+    }
+
+    private bool IsPrecisionAssemblyTrackingActive()
+    {
+        return enablePrecisionAssemblyTracking
+            && velocityTeleop != null
+            && velocityTeleop.IsCommandActive;
+    }
+
+    private float GetTargetStationaryPositionEpsilon()
+    {
+        return IsPrecisionAssemblyTrackingActive()
+            ? precisionAssemblyTargetChangeEpsilonMeters
+            : targetStationaryPositionEpsilon;
+    }
+
+    private float GetTargetStationaryRotationEpsilonDegrees()
+    {
+        return IsPrecisionAssemblyTrackingActive()
+            ? precisionAssemblyTargetChangeEpsilonDegrees
+            : targetStationaryRotationEpsilonDegrees;
     }
 
     private void HoldCurrentPoseAtSettledTarget()
     {
+        if (isSettledTargetHoldActive)
+        {
+            return;
+        }
+
         if (jointController != null)
         {
+            // 以测得的关节角作为最终保持值。这里必须只执行一次；若在每个
+            // FixedUpdate 重设 ArticulationDrive，物理引擎会表现成停止后的摆动。
             HoldCurrentJointsAndClearTrajectory();
         }
 
         ResetJointDeltaSmoothing();
+        isSettledTargetHoldActive = true;
     }
 
     private void BeginJointWaypoint(int jointCount)
@@ -803,7 +971,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             workingJointTargetsDegrees,
             workingJointCount,
             clampToDriveLimits,
-            true);
+            false);
     }
 
     private void HoldCurrentJointsAndClearTrajectory()
@@ -930,7 +1098,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             }
 
             float rawDeltaDegrees = Mathf.Clamp(
-                jointDeltaRadians * Mathf.Rad2Deg * dlsGain,
+                jointDeltaRadians * Mathf.Rad2Deg * GetEffectiveDlsGain(),
                 -maxJointStepDegrees,
                 maxJointStepDegrees);
             float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
@@ -978,10 +1146,10 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 return true;
             }
 
-            // In locked-orientation teleoperation, the controller deliberately
-            // supplies no angular command, but the IK still must preserve the
-            // existing TCP attitude while the user translates it.
-            if (velocityTeleop != null && velocityTeleop.IsOrientationLocked)
+            // 右手单独平移时，必须保持在 Grip 起始时捕获的完整抓取姿态。
+            // 不能用“左手是否为 Locked 输入模式”判断；本项目左手采用摇杆
+            // 控制，若在此返回 false，IK 会为了平移而把夹爪朝上偏转。
+            if (velocityTeleop != null && velocityTeleop.IsPositionOrientationLocked)
             {
                 return true;
             }
@@ -1007,8 +1175,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private bool IsTranslationOrientationHoldActive()
     {
         return velocityTeleop != null
-            && velocityTeleop.IsPositionClutched
-            && !velocityTeleop.IsRotationClutched;
+            && velocityTeleop.IsPositionOrientationLocked;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)
@@ -1175,10 +1342,33 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private float SmoothJointDelta(int jointIndex, float rawDeltaDegrees)
     {
         EnsureJointDeltaSmoothingBuffer(jointIndex + 1);
+        if (IsStationaryDampingActive())
+        {
+            // 目标停止后绝不能沿用上一帧的关节修正，否则会形成“惯性尾巴”。
+            // 静止阶段仅使用当帧的、已降低增益后的校正量。
+            smoothedJointDeltaDegrees[jointIndex] = rawDeltaDegrees;
+            return rawDeltaDegrees;
+        }
+
         float smoothing = Mathf.Clamp01(jointDeltaSmoothing);
         float smoothed = Mathf.Lerp(rawDeltaDegrees, smoothedJointDeltaDegrees[jointIndex], smoothing);
         smoothedJointDeltaDegrees[jointIndex] = smoothed;
         return smoothed;
+    }
+
+    private float GetEffectiveDlsGain()
+    {
+        return IsStationaryDampingActive()
+            ? dlsGain * stationaryDlsGainMultiplier
+            : dlsGain;
+    }
+
+    private bool IsStationaryDampingActive()
+    {
+        // 该实验性补偿会改变 IK 的最终收敛路径。默认关闭并使用稳定基线的
+        // 目标死区/保持逻辑，避免停止前出现长时间的低增益追赶。
+        return enableStationaryDlsDamping
+            && targetStationaryTime >= stationaryDampingStartSeconds;
     }
 
     private void EnsureJointDeltaSmoothingBuffer(int minLength)
@@ -1293,6 +1483,20 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         return hasToolToGraspRotation
             ? desiredGraspRotation * Quaternion.Inverse(toolToGraspRotation)
             : desiredGraspRotation;
+    }
+
+    /// <summary>
+    /// 将一个命令 tool0 姿态转换为对应的两指中心抓取坐标系姿态。
+    /// 遥操作层用它从当前 TCP 命令中提取夹爪偏航参考，避免把 URDF 的 tool0
+    /// 局部轴误当成物理夹爪的轴向。
+    /// </summary>
+    public Quaternion GetGraspRotationForToolRotation(Quaternion toolRotation)
+    {
+        Quaternion currentGraspRotation = GetActualGraspRotation();
+        EnsureToolToGraspRotation(currentGraspRotation);
+        return hasToolToGraspRotation
+            ? toolRotation * toolToGraspRotation
+            : toolRotation;
     }
 
     public Quaternion GetToolRotationForGraspApproach(

@@ -31,6 +31,18 @@ public class Ur5ArticulationJointController : MonoBehaviour
     public float maxDriveAccelerationDegreesPerSecondSquared = 7000.0f;
     public float driveTargetToleranceDegrees = 0.005f;
 
+    [Header("Closed-Loop Target Lead")]
+    [Tooltip("启用后，Articulation Drive 的目标不会超过实际关节角太多。这样 IK 的连续更新不会把物理关节当成弹簧甩动。")]
+    public bool limitDriveTargetLeadFromMeasuredJoint = true;
+    [Tooltip("肩、肘关节允许的最大目标超前角度。该值限制物理误差，不限制正常的最高运动速度。")]
+    public float maximumDriveTargetLeadDegrees = 3.0f;
+    [Tooltip("腕部惯量较小、最容易摆动，因此使用更小的最大目标超前角度。")]
+    public float maximumWristDriveTargetLeadDegrees = 1.15f;
+    [Tooltip("Ready Pose 是已知、安全的关节轨迹，可使用更大的受控领先量以缩短回到初始抓取位的时间。")]
+    public float readyPoseMaximumDriveTargetLeadDegrees = 6.0f;
+    [Tooltip("Ready Pose 下腕部允许的最大受控领先量，仍小于肩、肘关节以避免腕部摆动。")]
+    public float readyPoseMaximumWristDriveTargetLeadDegrees = 2.25f;
+
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;
     public bool disableGravityForDigitalTwin = true;
@@ -40,6 +52,7 @@ public class Ur5ArticulationJointController : MonoBehaviour
     private readonly List<float> appliedJointTargets = new List<float>();
     private readonly List<float> appliedJointVelocities = new List<float>();
     private int selectedJointIndex;
+    private bool useReadyPoseDriveLeadProfile;
 
     public IReadOnlyList<ArticulationBody> Joints => joints;
     public IReadOnlyList<float> JointTargets => jointTargets;
@@ -67,6 +80,10 @@ public class Ur5ArticulationJointController : MonoBehaviour
         maxDriveSpeedDegreesPerSecond = Mathf.Max(0.0f, maxDriveSpeedDegreesPerSecond);
         maxDriveAccelerationDegreesPerSecondSquared = Mathf.Max(0.0f, maxDriveAccelerationDegreesPerSecondSquared);
         driveTargetToleranceDegrees = Mathf.Max(0.0f, driveTargetToleranceDegrees);
+        maximumDriveTargetLeadDegrees = Mathf.Max(0.0f, maximumDriveTargetLeadDegrees);
+        maximumWristDriveTargetLeadDegrees = Mathf.Max(0.0f, maximumWristDriveTargetLeadDegrees);
+        readyPoseMaximumDriveTargetLeadDegrees = Mathf.Max(0.0f, readyPoseMaximumDriveTargetLeadDegrees);
+        readyPoseMaximumWristDriveTargetLeadDegrees = Mathf.Max(0.0f, readyPoseMaximumWristDriveTargetLeadDegrees);
     }
 
     private void Update()
@@ -131,6 +148,15 @@ public class Ur5ArticulationJointController : MonoBehaviour
         }
 
         return snapshot;
+    }
+
+    /// <summary>
+    /// 切换已知 Ready Pose 专用的关节驱动档位。它仍采用实际关节反馈限幅，
+    /// 仅放宽安全轨迹的允许领先量，不影响手动遥操作的精密与稳定性。
+    /// </summary>
+    public void SetReadyPoseDriveLeadProfile(bool enabled)
+    {
+        useReadyPoseDriveLeadProfile = enabled;
     }
 
     private void FixedUpdate()
@@ -493,8 +519,43 @@ public class Ur5ArticulationJointController : MonoBehaviour
     private void ApplyDriveTarget(int index, float targetDegrees)
     {
         ArticulationDrive drive = joints[index].xDrive;
-        drive.target = targetDegrees;
+        // 所有写入 Articulation Drive 的路径（IK、轨迹、按键和保持）统一经过
+        // 同一闭环保护，避免某条旁路重新引入瞬时大关节误差。
+        drive.target = ConstrainDriveTargetLead(index, targetDegrees);
         joints[index].xDrive = drive;
+    }
+
+    /// <summary>
+    /// 将物理 Drive 的命令限制在测得关节角附近。IK 仍可按正常速度持续更新
+    /// jointTargets；但当物理链条暂时跟不上时，不再累积很大的弹簧误差，避免
+    /// 尤其是腕部在运动和停止阶段出现摆动。
+    /// </summary>
+    private float ConstrainDriveTargetLead(int jointIndex, float requestedTargetDegrees)
+    {
+        if (!limitDriveTargetLeadFromMeasuredJoint || jointIndex < 0 || jointIndex >= joints.Count)
+        {
+            return requestedTargetDegrees;
+        }
+
+        float measuredDegrees = GetMeasuredJointDegrees(jointIndex, requestedTargetDegrees);
+        float maximumLead;
+        if (useReadyPoseDriveLeadProfile)
+        {
+            maximumLead = jointIndex >= 3
+                ? readyPoseMaximumWristDriveTargetLeadDegrees
+                : readyPoseMaximumDriveTargetLeadDegrees;
+        }
+        else
+        {
+            maximumLead = jointIndex >= 3
+                ? maximumWristDriveTargetLeadDegrees
+                : maximumDriveTargetLeadDegrees;
+        }
+        maximumLead = Mathf.Max(driveTargetToleranceDegrees, maximumLead);
+        return Mathf.Clamp(
+            requestedTargetDegrees,
+            measuredDegrees - maximumLead,
+            measuredDegrees + maximumLead);
     }
 
     private float ClampToDriveLimits(int index, float targetDegrees)

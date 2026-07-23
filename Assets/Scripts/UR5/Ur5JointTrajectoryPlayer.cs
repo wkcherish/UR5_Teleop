@@ -16,8 +16,10 @@ public class Ur5JointTrajectoryPlayer : MonoBehaviour
     [Header("Trajectory Playback")]
     public bool play = true;
     public QueueMode queueMode = QueueMode.LatestOnly;
-    public float jointAssignmentIntervalSeconds = 0.016f;
-    public bool applyDirectlyToDrive = true;
+    [Tooltip("0 表示每个物理帧提交最新 IK 解，避免 72 Hz Quest 运行时隔帧跳变。")]
+    public float jointAssignmentIntervalSeconds = 0.0f;
+    [Tooltip("必须关闭：直接写 Articulation Drive 会跳过关节闭环平滑，造成腕部弹簧式摆动。")]
+    public bool applyDirectlyToDrive = false;
     public bool clampToDriveLimits = true;
     public int maxQueuedWaypoints = 1;
 
