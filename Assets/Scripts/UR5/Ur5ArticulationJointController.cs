@@ -139,6 +139,21 @@ public class Ur5ArticulationJointController : MonoBehaviour
         return appliedJointTargets[index];
     }
 
+    public float GetDriveTargetDegrees(int index)
+    {
+        if (index < 0 || index >= joints.Count)
+        {
+            return 0.0f;
+        }
+
+        return joints[index].xDrive.target;
+    }
+
+    public float GetDriveTargetLeadDegrees(int index)
+    {
+        return Mathf.Abs(GetDriveTargetDegrees(index) - GetMeasuredJointDegrees(index));
+    }
+
     public float[] GetJointTargetSnapshotDegrees()
     {
         float[] snapshot = new float[jointTargets.Count];

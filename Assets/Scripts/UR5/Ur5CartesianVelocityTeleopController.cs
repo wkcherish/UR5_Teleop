@@ -22,6 +22,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Transform xrOrigin;
     public Transform tcpPreviewTarget;
     public TcpTargetWorkspaceLimiter workspaceLimiter;
+    public TcpTargetWriteMonitor targetWriteMonitor;
     public Ur5UrScriptSpeedlClient speedlClient;
 
     [Header("Controllers")]
@@ -33,11 +34,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public RotationInputMode rotationInputMode = RotationInputMode.Locked;
 
     [Header("Right Controller Position Stabilization")]
-    [Tooltip("Filters millimetre-level Quest controller jitter before it can move the TCP target. This affects only the right-hand Cartesian command, never joint-state recording.")]
+    [Tooltip("Rejects millimetre-level Quest controller jitter before it can move the TCP target. This affects only the right-hand Cartesian command, never joint-state recording.")]
     public bool filterControllerPosition = true;
     [Tooltip("Small controller-position changes below this radius are treated as tracking noise.")]
     public float controllerPositionJitterDeadbandMeters = 0.0025f;
-    [Tooltip("Higher values respond faster to intentional hand motion; 16 keeps normal movement responsive while removing idle jitter.")]
+    [Tooltip("Used only by the optional adaptive filter. The default noise gate has no time-based follow lag.")]
     public float controllerPositionFilterSharpness = 16.0f;
     [Tooltip("实验性自适应滤波。默认关闭：它会让手停后仍有滤波尾巴，不适合直接驱动 Unity IK 目标。")]
     public bool useAdaptiveControllerPositionFilter = false;
@@ -119,20 +120,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float previewMaxLinearSpeed = 0.35f;
     public float previewMaxAngularSpeedDegreesPerSecond = 420.0f;
     [Header("Open-Teach 相对位姿命令")]
+    [Tooltip("Use the anchored relative-pose loop from elpis-lab/UR10_Teleop. Grip captures the controller and actual TCP together; tracking derives every target from that pair and applies one smoothing step.")]
+    public bool useAnchoredPoseTeleopStrategy = true;
+    [Tooltip("Single target smoothing step at each FixedUpdate. Higher is more responsive; this replaces target deadbands and the second MoveTowards limiter.")]
+    [Range(0.01f, 1.0f)] public float anchoredPoseSmoothingStep = 0.18f;
+    [Tooltip("Optional lower single-filter step while A is held. Keep it non-zero so precise motion remains responsive.")]
+    [Range(0.01f, 1.0f)] public float anchoredPosePrecisionSmoothingStep = 0.18f;
     [Tooltip("采用 Open-Teach 同类的单级相对位姿滤波。开启后不再叠加 TCP 的第二层指数平滑，减少 Quest 操作中的迟滞与卡顿。")]
     public bool useRelativePoseCommandFilter = true;
     [Tooltip("最终 TCP 命令的上一帧保留比例。0 为完全直通；0.55 在 Quest 追踪噪声与快速响应之间取得平衡。")]
     [Range(0.0f, 0.95f)] public float relativePoseCommandFilterRetention = 0.55f;
     [Tooltip("精细模式使用的 TCP 命令保留比例。略高于常规模式，用于抑制 Quest 微抖，但不会产生松手后的滤波尾巴。")]
     [Range(0.0f, 0.95f)] public float fineRelativePoseCommandFilterRetention = 0.40f;
+    [Tooltip("将旧的每帧保留比例解释为该刷新率下的值；90 Hz 保持旧版本的初始响应。")]
+    [Range(30.0f, 144.0f)] public float relativePoseFilterReferenceRateHz = 90.0f;
     [Tooltip("实验性 TCP 加速度轨迹。默认关闭：Unity 预览使用直接限速目标，避免停手后继续追赶。")]
     public bool useAccelerationLimitedPreviewTrajectory = false;
     public float previewMaxLinearAcceleration = 1.60f;
     public float previewMaxAngularAccelerationDegreesPerSecondSquared = 1800.0f;
-    [Tooltip("TCP 指令小于该距离时保持上一个目标，避免 Quest 微抖被位置比例放大。")]
-    public float previewTargetDeadbandMeters = 0.00025f;
-    [Tooltip("兼容旧 Inspector 配置；默认控制已使用相同的精细目标死区。")]
-    public float finePreviewTargetDeadbandMeters = 0.00025f;
+    [Tooltip("TCP target changes smaller than this are held during normal right-hand control, preventing tracking noise from entering IK.")]
+    public float previewTargetDeadbandMeters = 0.00060f;
+    [Tooltip("Smaller target deadband used while A precision modifier is held.")]
+    public float finePreviewTargetDeadbandMeters = 0.00020f;
 
     [Header("右手停手即停")]
     [Tooltip("实验性手停冻结。默认关闭，避免与 IK 自身的到位保持发生目标切换。")]
@@ -174,6 +183,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Range(0.1f, 1.0f)] public float fineLinearSpeedMultiplier = 1.00f;
     [Range(0.1f, 1.0f)] public float fineAngularSpeedMultiplier = 1.00f;
 
+    [Header("A Precision Modifier")]
+    [Tooltip("Quest 右手 A 键。它是临时倍率修饰键，不会切换控制模式。")]
+    public bool enableAPrecisionModifier = true;
+    [Tooltip("正常相对手部位移到 TCP 的倍率。")]
+    [Range(0.05f, 4.5f)] public float normalPositionScale = 0.80f;
+    [Tooltip("按住 A 时使用的精细位置倍率。")]
+    [Range(0.01f, 1.0f)] public float precisionModifierPositionScale = 0.15f;
+    [Tooltip("正常左摇杆工具轴旋转最高速度。")]
+    [Range(1.0f, 180.0f)] public float normalJoystickYawSpeedDegreesPerSecond = 55.0f;
+    [Tooltip("按住 A 时左摇杆工具轴旋转最高速度。")]
+    [Range(1.0f, 60.0f)] public float precisionJoystickYawSpeedDegreesPerSecond = 10.0f;
+    [Range(1.0f, 3.0f)] public float joystickResponseExponent = 1.5f;
+
     [Header("Output")]
     public bool sendToSpeedlClient = true;
     public bool logDeviceStatus = true;
@@ -200,7 +222,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Quaternion secondaryPoseStartGraspWorldRotation = Quaternion.identity;
     private Vector3 filteredControllerPositionWorld;
     private readonly Ur5OneEuroVectorFilter controllerPositionOneEuroFilter = new Ur5OneEuroVectorFilter();
+    private readonly Ur5PositionNoiseGate controllerPositionNoiseGate = new Ur5PositionNoiseGate();
     private readonly Ur5RelativePoseCommandFilter relativePoseCommandFilter = new Ur5RelativePoseCommandFilter();
+    private readonly Ur5RelativePoseClutchMapper relativePoseClutchMapper = new Ur5RelativePoseClutchMapper();
+    private readonly Ur5AnchoredPoseTeleopStrategy anchoredPoseTeleop = new Ur5AnchoredPoseTeleopStrategy();
     private bool hasFilteredControllerPosition;
     private bool controllerPositionFilterIsSettling;
     private Vector3 latestPositionWorld;
@@ -244,6 +269,25 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     // X 长按的 ready pose 会直接将 TCP 同步到机械臂末端。记录其状态边沿，
     // 以避免旧的“夹爪朝下”目标在右手首次平移时被重新应用而造成预转动。
     private bool readyPoseWasActive;
+
+    public Vector3 LogicalCommandPosition { get; private set; }
+    public Quaternion LogicalCommandRotation { get; private set; } = Quaternion.identity;
+    public Vector3 FilteredCommandPosition { get; private set; }
+    public Quaternion FilteredCommandRotation { get; private set; } = Quaternion.identity;
+    public Vector3 ConstrainedCommandPosition { get; private set; }
+    public bool IsPreviewLeadLimited { get; private set; }
+    public bool IsPrecisionModifierHeld { get; private set; }
+    public bool IsAnchoredPoseStrategyActive => useAnchoredPoseTeleopStrategy && anchoredPoseTeleop.IsTracking;
+    public float ActiveAnchoredPoseSmoothingStep => GetAnchoredPoseSmoothingStep();
+    public Vector3 RawControllerPositionWorld => latestRawPositionWorld;
+    public Vector3 StabilizedControllerPositionWorld => filteredControllerPositionWorld;
+    public float ControllerPositionInputDifferenceMeters => latestRawPositionValid && hasFilteredControllerPosition
+        ? Vector3.Distance(latestRawPositionWorld, filteredControllerPositionWorld)
+        : 0.0f;
+    public bool IsControllerPositionNoiseGateHolding => filterControllerPosition
+        && latestRawPositionValid
+        && hasFilteredControllerPosition
+        && ControllerPositionInputDifferenceMeters <= controllerPositionJitterDeadbandMeters;
 
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
@@ -403,13 +447,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 hasPositionOrientationLock = true;
             }
         }
-        IsFinePositionControlActive = IsPositionClutched && ReadFineControl(positionDevice);
-        IsFineControlActive =
-            IsFinePositionControlActive
-            || (IsRotationClutched && ReadFineControl(rotationDevice));
+        IsPrecisionModifierHeld = ReadAPrecisionModifier(positionDevice);
+        IsFinePositionControlActive = IsPositionClutched && IsPrecisionModifierHeld;
+        IsFineControlActive = IsPrecisionModifierHeld && (IsPositionClutched || IsRotationClutched);
 
         CaptureClutchOrigins(positionWorld, rotationWorld);
-        RebasePositionClutchForFineControl(positionWorld);
+        RebasePositionClutchForFineControl(positionWorld, rotationWorld);
         UpdatePositionHandStopHold(Time.deltaTime);
         CalculateRawVelocity(positionWorld, rotationWorld);
         ApplySafetyLimitsAndFiltering(Time.deltaTime);
@@ -436,19 +479,6 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
     }
 
-    private void LateUpdate()
-    {
-        if (hasPositionOrientationLock
-            && IsPositionClutched
-            && !IsRotationClutched
-            && tcpPreviewTarget != null)
-        {
-            // 真实 UR 的 speedl 纯平移命令角速度为零。将这一不变量放在
-            // LateUpdate 再执行一次，防止场景中的辅助组件或父级变换覆盖 TCP 世界姿态。
-            tcpPreviewTarget.rotation = positionOrientationLock;
-        }
-    }
-
     private void OnDisable()
     {
         rawBaseLinearVelocity = Vector3.zero;
@@ -462,7 +492,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         hasStabilizedPreviewPosition = false;
         hasFilteredControllerPosition = false;
         controllerPositionFilterIsSettling = false;
+        controllerPositionNoiseGate.Clear();
         relativePoseCommandFilter.Clear();
+        relativePoseClutchMapper.End();
+        anchoredPoseTeleop.Pause();
 
         if (speedlClient != null)
         {
@@ -490,8 +523,22 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             positionNeutralWorldPosition = positionWorld;
             if (tcpPreviewTarget != null)
             {
+                // The upstream strategy anchors the input to the measured tool
+                // pose, never to a potentially lagging command target.
+                Vector3 actualToolPosition = GetActualToolPosition();
+                Quaternion actualToolRotation = GetActualToolRotation();
                 positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
-                stabilizedPreviewPosition = tcpPreviewTarget.position;
+                relativePoseClutchMapper.Begin(
+                    positionWorld,
+                    latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                    actualToolPosition,
+                    actualToolRotation);
+                anchoredPoseTeleop.Resume(
+                    positionWorld,
+                    latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                    actualToolPosition,
+                    actualToolRotation);
+                stabilizedPreviewPosition = actualToolPosition;
                 hasStabilizedPreviewPosition = true;
                 // 离合按下时同时重置相对位姿命令滤波。与 Open-Teach 的
                 // hand_init_H / robot_init_H 成对重建相同，避免从旧命令追赶。
@@ -510,7 +557,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 if (!hasPersistentOrientationTarget
                     || !IsDownwardGraspTarget(persistentOrientationTarget))
                 {
-                    tcpFollower.HoldTargetRotationAtCurrentGraspFrame();
+                    tcpFollower.HoldTargetRotationAtCurrentGraspFrame("QuestTeleop");
                     persistentOrientationTarget = tcpPreviewTarget.rotation;
                     hasPersistentOrientationTarget = true;
                 }
@@ -522,6 +569,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         if (!IsPositionClutched)
         {
+            relativePoseClutchMapper.End();
+            anchoredPoseTeleop.Pause();
             hasPositionOrientationLock = false;
             wasFinePositionControlActive = false;
             hasStabilizedPreviewPosition = false;
@@ -782,32 +831,34 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         tcpPreviewTarget.SetPositionAndRotation(nextWorldPosition, nextWorldRotation);
+        if (targetWriteMonitor != null)
+        {
+            targetWriteMonitor.RecordWrite("QuestTeleopVelocityIntegration");
+        }
     }
 
     private void ApplyRelativePosePreview(float deltaTime)
     {
-        Vector3 desiredPosition = tcpPreviewTarget.position;
-        Quaternion desiredRotation = tcpPreviewTarget.rotation;
-
-        if (IsPositionClutched && latestPositionValid)
+        if (!IsCommandActive)
         {
-            Vector3 controllerDelta = latestPositionWorld - positionNeutralWorldPosition;
-            Vector3 deadbandedDelta = ApplyVectorDeadband(controllerDelta, linearDeadbandMeters);
-            desiredPosition = positionClutchStartTargetWorldPosition
-                + ApplyProgressivePositionResponse(deadbandedDelta);
-
-            if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
-            {
-                desiredPosition = workspaceLimiter.ClampWorldPosition(desiredPosition);
-            }
-
-            desiredPosition = LimitPreviewLeadToActualTcp(desiredPosition);
+            // Grip release is an ownership boundary. Do not write TcpTarget
+            // here: the follower performs one explicit safe freeze instead.
+            LogicalCommandPosition = tcpPreviewTarget.position;
+            LogicalCommandRotation = tcpPreviewTarget.rotation;
+            FilteredCommandPosition = tcpPreviewTarget.position;
+            FilteredCommandRotation = tcpPreviewTarget.rotation;
+            ConstrainedCommandPosition = tcpPreviewTarget.position;
+            IsPreviewLeadLimited = false;
+            return;
         }
+
+        Vector3 requestedPosition = tcpPreviewTarget.position;
+        Quaternion requestedRotation = tcpPreviewTarget.rotation;
 
         if (hasPositionOrientationLock && IsPositionClutched && !IsRotationClutched)
         {
             // 右手只允许改变位置；此处保持的是完整旋转，不允许任何偏航自转。
-            desiredRotation = positionOrientationLock;
+            requestedRotation = positionOrientationLock;
         }
         else if (IsRotationClutched
             && isSecondaryPoseRotationActive
@@ -815,55 +866,104 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && latestRotationControllerPositionValid)
         {
             // 左手 Grip + Y：仅写竖直下抓姿态中的偏航；右手同时 Grip 时位置仍由右手写入。
-            desiredRotation = CalculateSecondaryPoseYawRotation();
+            requestedRotation = CalculateSecondaryPoseYawRotation();
+            persistentOrientationTarget = requestedRotation;
+            hasPersistentOrientationTarget = true;
         }
         else if (IsRotationClutched && IsJoystickRotationMode())
         {
-            // 双手叠加时，右手只写位置、左手只写姿态；两者最终在同一个
-            // TCP 位姿中合成，不能让旧的持久姿态覆盖左摇杆的当帧指令。
-            desiredRotation = CalculateJoystickPreviewRotation(tcpPreviewTarget.rotation, deltaTime);
+            // Integrate from the logical orientation rather than the filtered
+            // TcpTarget. Feeding the filtered output back into the integrator
+            // is a second servo loop and was the direct cause of stick wobble.
+            Quaternion rotationReference = hasPersistentOrientationTarget
+                ? persistentOrientationTarget
+                : tcpPreviewTarget.rotation;
+            requestedRotation = CalculateJoystickPreviewRotation(rotationReference, deltaTime);
+            persistentOrientationTarget = requestedRotation;
+            hasPersistentOrientationTarget = true;
         }
         else if (IsRotationClutched && latestRotationValid)
         {
-            desiredRotation = CalculateRelativePreviewRotation(latestRotationWorld);
+            requestedRotation = CalculateRelativePreviewRotation(latestRotationWorld);
         }
         else if (hasPersistentOrientationTarget)
         {
-            desiredRotation = persistentOrientationTarget;
+            requestedRotation = persistentOrientationTarget;
         }
 
+        if (IsPositionClutched && latestPositionValid)
+        {
+            if (useAnchoredPoseTeleopStrategy)
+            {
+                if (!anchoredPoseTeleop.TryGetRequestedPose(
+                    latestPositionWorld,
+                    latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                    Vector3.one * GetActivePositionScale(),
+                    requestedRotation,
+                    out requestedPosition,
+                    out requestedRotation))
+                {
+                    anchoredPoseTeleop.Resume(
+                        latestPositionWorld,
+                        latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                        GetActualToolPosition(),
+                        GetActualToolRotation());
+                    anchoredPoseTeleop.TryGetRequestedPose(
+                        latestPositionWorld,
+                        latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                        Vector3.one * GetActivePositionScale(),
+                        requestedRotation,
+                        out requestedPosition,
+                        out requestedRotation);
+                }
+            }
+            else
+            {
+                relativePoseClutchMapper.TryMap(
+                    latestPositionWorld,
+                    latestRotationValid ? latestRotationWorld : Quaternion.identity,
+                    GetActivePositionScale(),
+                    GetRelativePreviewRotationScale(),
+                    out requestedPosition,
+                    out _);
+            }
+        }
+
+        LogicalCommandPosition = requestedPosition;
+        LogicalCommandRotation = requestedRotation;
+        if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
+        {
+            requestedPosition = workspaceLimiter.ClampWorldPosition(requestedPosition);
+        }
+
+        ConstrainedCommandPosition = requestedPosition;
+        IsPreviewLeadLimited = false;
         Vector3 nextPosition;
         Quaternion nextRotation;
-        if (useRelativePoseCommandFilter && IsCommandActive)
+        if (useAnchoredPoseTeleopStrategy && IsPositionClutched)
         {
-            // Open-Teach 同类策略：先由相对离合位姿得到唯一 TCP 命令，再只在
-            // 这一层做位置 Lerp / 姿态 Slerp。下方 MoveTowards/RotateTowards 仅是
-            // 防止追踪丢帧时单帧跳跃过大，并非第二个低通滤波器。
-            relativePoseCommandFilter.Filter(
-                desiredPosition,
-                desiredRotation,
-                GetRelativePoseCommandFilterRetention(),
-                out Vector3 filteredPosition,
-                out Quaternion filteredRotation);
-            nextPosition = Vector3.MoveTowards(
-                tcpPreviewTarget.position,
-                filteredPosition,
-                Mathf.Max(0.0f, previewMaxLinearSpeed) * deltaTime);
-            nextRotation = Quaternion.RotateTowards(
-                tcpPreviewTarget.rotation,
-                filteredRotation,
-                Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond) * deltaTime);
+            anchoredPoseTeleop.FilterRequestedPose(
+                requestedPosition,
+                requestedRotation,
+                GetAnchoredPoseSmoothingStep(),
+                out nextPosition,
+                out nextRotation);
         }
         else
         {
-            // 松开 Grip 后清空滤波状态；下一次按下会重新建立相对零点，而不会
-            // 继续追赶上一次的滤波尾巴。
-            relativePoseCommandFilter.Reset(desiredPosition, desiredRotation);
-            nextPosition = desiredPosition;
-            nextRotation = desiredRotation;
+            // Left-stick-only rotation still uses exactly one command filter.
+            float step = GetAnchoredPoseSmoothingStep();
+            nextPosition = tcpPreviewTarget.position;
+            nextRotation = Quaternion.Slerp(tcpPreviewTarget.rotation, requestedRotation, step);
         }
 
+        FilteredCommandPosition = nextPosition;
+        FilteredCommandRotation = nextRotation;
         tcpPreviewTarget.SetPositionAndRotation(nextPosition, nextRotation);
+        if (targetWriteMonitor != null)
+        {
+            targetWriteMonitor.RecordWrite("QuestTeleopAnchoredPose");
+        }
     }
 
     private Quaternion CalculateRelativePreviewRotation(Quaternion rotationWorld)
@@ -1028,8 +1128,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         // Use the physical symmetry axis through the two-pad midpoint rather
         // than an imported tool0 or controller-local axis.
-        float localYDegrees = yawInput
-            * Mathf.Max(0.0f, joystickYawSpeedDegreesPerSecond)
+        float localYDegrees = ApplyJoystickResponse(yawInput)
+            * GetActiveJoystickYawSpeedDegreesPerSecond()
             * Mathf.Max(0.0001f, deltaTime);
         Quaternion currentGraspRotation = GetPreviewGraspRotation(currentRotation);
         Vector3 symmetryAxisWorld = GetGripperCenterSymmetryAxisWorld(currentGraspRotation);
@@ -1126,6 +1226,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             : Mathf.Clamp(relativePoseCommandFilterRetention, 0.0f, 0.95f);
     }
 
+    private float GetAnchoredPoseSmoothingStep()
+    {
+        return Mathf.Clamp01(IsPrecisionModifierHeld
+            ? anchoredPosePrecisionSmoothingStep
+            : anchoredPoseSmoothingStep);
+    }
+
     /// <summary>
     /// 将同一个相对 clutch 输入连续映射为“近处精密、远处常规”的位移。
     /// 这是连续函数而非精细模式：不会重置原点、不需要额外按钮，也不会在
@@ -1152,7 +1259,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     /// 精细模式切换时重新捕获右手与 TCP 的相对基准。这样按下或松开右摇杆
     /// 不会改变当前目标点，只会改变之后手部位移的分辨率。
     /// </summary>
-    private void RebasePositionClutchForFineControl(Vector3 positionWorld)
+    private void RebasePositionClutchForFineControl(Vector3 positionWorld, Quaternion rotationWorld)
     {
         if (!IsPositionClutched || !latestPositionValid)
         {
@@ -1169,8 +1276,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         if (tcpPreviewTarget != null)
         {
             positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
+            relativePoseClutchMapper.Rebase(
+                positionWorld,
+                latestRotationValid ? rotationWorld : Quaternion.identity,
+                tcpPreviewTarget.position,
+                tcpPreviewTarget.rotation);
+            anchoredPoseTeleop.Rebase(
+                positionWorld,
+                latestRotationValid ? rotationWorld : Quaternion.identity,
+                tcpPreviewTarget.position,
+                tcpPreviewTarget.rotation);
             stabilizedPreviewPosition = tcpPreviewTarget.position;
             hasStabilizedPreviewPosition = true;
+            relativePoseCommandFilter.Reset(tcpPreviewTarget.position, tcpPreviewTarget.rotation);
         }
 
         positionMotionReferenceWorld = latestRawPositionWorld;
@@ -1184,13 +1302,48 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private float GetRelativePreviewRotationScale()
     {
         float scale = Mathf.Max(0.0f, relativePreviewRotationScale);
-        return applyFineControlToRelativePreview && IsFineControlActive
+        return IsPrecisionModifierHeld
             ? scale * Mathf.Clamp01(fineAngularSpeedMultiplier)
             : scale;
     }
 
+    private float GetActivePositionScale()
+    {
+        if (enableAPrecisionModifier)
+        {
+            return IsPrecisionModifierHeld
+                ? Mathf.Max(0.0f, precisionModifierPositionScale)
+                : Mathf.Max(0.0f, normalPositionScale);
+        }
+
+        return Mathf.Max(0.0f, relativePreviewPositionScale);
+    }
+
+    private float GetActiveJoystickYawSpeedDegreesPerSecond()
+    {
+        if (enableAPrecisionModifier)
+        {
+            return IsPrecisionModifierHeld
+                ? Mathf.Max(0.0f, precisionJoystickYawSpeedDegreesPerSecond)
+                : Mathf.Max(0.0f, normalJoystickYawSpeedDegreesPerSecond);
+        }
+
+        return Mathf.Max(0.0f, joystickYawSpeedDegreesPerSecond);
+    }
+
+    private float ApplyJoystickResponse(float value)
+    {
+        if (Mathf.Abs(value) < 0.000001f)
+        {
+            return 0.0f;
+        }
+
+        return Mathf.Sign(value) * Mathf.Pow(Mathf.Abs(value), Mathf.Max(1.0f, joystickResponseExponent));
+    }
+
     private Vector3 LimitPreviewLeadToActualTcp(Vector3 requestedPosition)
     {
+        IsPreviewLeadLimited = false;
         if (!limitPreviewLeadToActualTcp
             || maximumPreviewLeadMeters <= 0.0f
             || tcpFollower == null
@@ -1200,9 +1353,27 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         Vector3 actualTcpPosition = tcpFollower.ControlPointPosition;
-        return actualTcpPosition + Vector3.ClampMagnitude(
-            requestedPosition - actualTcpPosition,
-            Mathf.Max(0.0f, maximumPreviewLeadMeters));
+        Vector3 lead = requestedPosition - actualTcpPosition;
+        float maximumLead = Mathf.Max(0.0f, maximumPreviewLeadMeters);
+        IsPreviewLeadLimited = lead.sqrMagnitude > maximumLead * maximumLead;
+        return actualTcpPosition + Vector3.ClampMagnitude(lead, maximumLead);
+    }
+
+    private Vector3 GetActualToolPosition()
+    {
+        return tcpFollower != null && tcpFollower.enabled
+            ? tcpFollower.ControlPointPosition
+            : tcpPreviewTarget.position;
+    }
+
+    private Quaternion GetActualToolRotation()
+    {
+        if (tcpFollower == null || !tcpFollower.enabled)
+        {
+            return tcpPreviewTarget.rotation;
+        }
+
+        return tcpFollower.GetToolRotationForGraspRotation(tcpFollower.ActualGraspRotation);
     }
 
     private Vector3 ApplyAxisLocks(Vector3 value, bool allowX, bool allowY, bool allowZ)
@@ -1230,6 +1401,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         {
             filteredControllerPositionWorld = rawPosition;
             controllerPositionOneEuroFilter.Reset(rawPosition);
+            controllerPositionNoiseGate.Reset(rawPosition);
             hasFilteredControllerPosition = true;
             controllerPositionFilterIsSettling = false;
             return rawPosition;
@@ -1239,6 +1411,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         {
             filteredControllerPositionWorld = rawPosition;
             controllerPositionOneEuroFilter.Reset(rawPosition);
+            controllerPositionNoiseGate.Reset(rawPosition);
             hasFilteredControllerPosition = true;
             controllerPositionFilterIsSettling = false;
             return filteredControllerPositionWorld;
@@ -1256,37 +1429,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return filteredControllerPositionWorld;
         }
 
-        Vector3 inputDelta = rawPosition - filteredControllerPositionWorld;
+        // A radial noise gate is deliberately used instead of another Lerp.
+        // It is stable while the controller is still, but does not create a
+        // trailing target after the operator stops a deliberate movement.
         float jitterRadius = Mathf.Max(0.0f, controllerPositionJitterDeadbandMeters);
-        if (inputDelta.sqrMagnitude > jitterRadius * jitterRadius)
-        {
-            controllerPositionFilterIsSettling = true;
-        }
-
-        if (!controllerPositionFilterIsSettling)
-        {
-            // Keep the last accepted pose completely still while the Quest
-            // reports its normal idle-position noise.
-            return filteredControllerPositionWorld;
-        }
-
-        float blend = 1.0f - Mathf.Exp(
-            -Mathf.Max(0.0f, controllerPositionFilterSharpness) * Mathf.Max(0.0001f, deltaTime));
-        filteredControllerPositionWorld = Vector3.Lerp(
-            filteredControllerPositionWorld,
-            rawPosition,
-            blend);
-
-        // Once a deliberate movement begins, let it converge all the way to
-        // the new hand pose. Without this state, a small intentional motion
-        // can get stranded part way through the jitter deadband.
-        float settleDistance = Mathf.Min(0.00025f, jitterRadius * 0.1f);
-        if (inputDelta.sqrMagnitude <= settleDistance * settleDistance)
-        {
-            filteredControllerPositionWorld = rawPosition;
-            controllerPositionFilterIsSettling = false;
-        }
-
+        controllerPositionFilterIsSettling = Vector3.Distance(rawPosition, filteredControllerPositionWorld) > jitterRadius;
+        filteredControllerPositionWorld = controllerPositionNoiseGate.Filter(rawPosition, jitterRadius);
         return filteredControllerPositionWorld;
     }
 
@@ -1350,7 +1498,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return stabilizedPreviewPosition;
         }
 
-        float deadband = previewTargetDeadbandMeters;
+        float deadband = IsPrecisionModifierHeld
+            ? finePreviewTargetDeadbandMeters
+            : previewTargetDeadbandMeters;
         if (Vector3.Distance(stabilizedPreviewPosition, requestedPosition) >= Mathf.Max(0.0f, deadband))
         {
             stabilizedPreviewPosition = requestedPosition;
@@ -1582,6 +1732,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && stickPressed;
     }
 
+    private bool ReadAPrecisionModifier(InputDevice device)
+    {
+        return enableAPrecisionModifier
+            && device.isValid
+            && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool pressed)
+            && pressed;
+    }
+
     private bool ReadSecondaryButton(InputDevice device)
     {
         return device.isValid
@@ -1653,6 +1811,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             workspaceLimiter = tcpPreviewTarget.GetComponent<TcpTargetWorkspaceLimiter>();
         }
 
+        if (targetWriteMonitor == null && tcpPreviewTarget != null)
+        {
+            targetWriteMonitor = tcpPreviewTarget.GetComponent<TcpTargetWriteMonitor>();
+        }
+
         if (speedlClient == null)
         {
             speedlClient = GetComponent<Ur5UrScriptSpeedlClient>();
@@ -1692,6 +1855,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewRotationSmoothingSharpness = Mathf.Max(0.0f, previewRotationSmoothingSharpness);
         relativePoseCommandFilterRetention = Mathf.Clamp(relativePoseCommandFilterRetention, 0.0f, 0.95f);
         fineRelativePoseCommandFilterRetention = Mathf.Clamp(fineRelativePoseCommandFilterRetention, 0.0f, 0.95f);
+        relativePoseFilterReferenceRateHz = Mathf.Max(1.0f, relativePoseFilterReferenceRateHz);
+        anchoredPoseSmoothingStep = Mathf.Clamp01(anchoredPoseSmoothingStep);
+        anchoredPosePrecisionSmoothingStep = Mathf.Clamp01(anchoredPosePrecisionSmoothingStep);
+        normalPositionScale = Mathf.Max(0.0f, normalPositionScale);
+        precisionModifierPositionScale = Mathf.Max(0.0f, precisionModifierPositionScale);
+        normalJoystickYawSpeedDegreesPerSecond = Mathf.Max(0.0f, normalJoystickYawSpeedDegreesPerSecond);
+        precisionJoystickYawSpeedDegreesPerSecond = Mathf.Max(0.0f, precisionJoystickYawSpeedDegreesPerSecond);
+        joystickResponseExponent = Mathf.Max(1.0f, joystickResponseExponent);
         previewMaxLinearSpeed = Mathf.Max(0.0f, previewMaxLinearSpeed);
         previewMaxAngularSpeedDegreesPerSecond = Mathf.Max(0.0f, previewMaxAngularSpeedDegreesPerSecond);
         previewMaxLinearAcceleration = Mathf.Max(0.01f, previewMaxLinearAcceleration);

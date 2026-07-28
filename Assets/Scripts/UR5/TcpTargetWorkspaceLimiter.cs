@@ -6,7 +6,10 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
     [Header("Reference Frame")]
     public Transform robotRoot;
     public bool constrainTarget = true;
+    [Tooltip("Legacy fallback only. Quest teleop applies ClampWorldPosition before publishing its command so this writer stays disabled.")]
+    public bool constrainInLateUpdate = true;
     public bool preserveInitialTargetPose = true;
+    public TcpTargetWriteMonitor writeMonitor;
 
     [Header("Workspace Relative To UR5 Base")]
     public Vector3 minimumLocalPosition = new Vector3(-0.70f, 0.05f, -0.70f);
@@ -27,7 +30,7 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (constrainTarget)
+        if (constrainTarget && constrainInLateUpdate)
         {
             if (preserveInitialTargetPose
                 && hasPreservedInitialPose
@@ -37,7 +40,15 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
             }
 
             hasPreservedInitialPose = false;
-            transform.position = ClampWorldPosition(transform.position);
+            Vector3 clamped = ClampWorldPosition(transform.position);
+            if ((clamped - transform.position).sqrMagnitude > 0.0000000001f)
+            {
+                transform.position = clamped;
+                if (writeMonitor != null)
+                {
+                    writeMonitor.RecordWrite("WorkspaceLimiterLegacy");
+                }
+            }
         }
     }
 
@@ -82,6 +93,11 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
 
     private void ResolveRobotRoot()
     {
+        if (writeMonitor == null)
+        {
+            writeMonitor = GetComponent<TcpTargetWriteMonitor>();
+        }
+
         if (robotRoot != null)
         {
             return;
@@ -92,5 +108,6 @@ public class TcpTargetWorkspaceLimiter : MonoBehaviour
         {
             robotRoot = foundRobot.transform;
         }
+
     }
 }

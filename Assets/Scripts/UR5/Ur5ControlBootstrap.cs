@@ -2,13 +2,15 @@ using UnityEngine;
 
 public class Ur5ControlBootstrap : MonoBehaviour
 {
+    private static Ur5ControlBootstrap runtimeOwner;
+    private bool hasConfiguredRuntime;
     [Header("Scene References")]
     public Transform robotRoot;
     public Transform tcpTarget;
     public bool createTcpTargetIfMissing = true;
 
     [Header("Legacy Target/IK Control")]
-    public bool enableKeyboardControl = true;
+    public bool enableKeyboardControl = false;
     public bool enableQuest3Control = true;
     public bool enableTcpTargetFollower = true;
 
@@ -55,6 +57,20 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
     private void Awake()
     {
+        if (runtimeOwner != null && runtimeOwner != this)
+        {
+            enabled = false;
+            Debug.LogWarning("Disabled duplicate Ur5ControlBootstrap; the first bootstrap owns UR5 teleoperation configuration.");
+            return;
+        }
+
+        runtimeOwner = this;
+        if (hasConfiguredRuntime)
+        {
+            return;
+        }
+
+        hasConfiguredRuntime = true;
         if (robotRoot == null)
         {
             robotRoot = FindRobotRoot();
@@ -74,6 +90,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         {
             DisableQuestPoseController();
             DisableLegacyVrTeleoperationControllers();
+            DisableKeyboardTargetController();
         }
         else if (enableQuest3Control && tcpTarget != null && tcpTarget.GetComponent<Quest3TcpTargetController>() == null)
         {
@@ -108,6 +125,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
         ConfigureGripperController();
         Ur5GraspAssistController graspAssist = ConfigureGraspAssist(follower);
+        ConfigureTeleopDiagnostics(follower, trajectoryPlayer, jointController);
         ConfigureSpectatorCamera();
         ConfigureControllerVisualizer();
         ConfigureRecorder(jointController, trajectoryPlayer, follower, graspAssist);
@@ -157,6 +175,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         workspaceLimiter.robotRoot = robotRoot;
+        // Teleop applies this constraint before publishing its final command.
+        // Keeping the legacy LateUpdate writer disabled gives TcpTarget one
+        // explicit owner during manual control.
+        workspaceLimiter.constrainInLateUpdate = false;
         // Keep a small clearance above the calibrated base/ground plane while
         // still allowing the Robotiq pads to reach low tabletop targets.
         workspaceLimiter.minimumLocalPosition = new Vector3(
@@ -172,6 +194,14 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
         collisionGuard.robotRoot = robotRoot;
         collisionGuard.preventObstaclePenetration = false;
+
+        TcpTargetWriteMonitor writeMonitor = tcpTarget.GetComponent<TcpTargetWriteMonitor>();
+        if (writeMonitor == null)
+        {
+            writeMonitor = tcpTarget.gameObject.AddComponent<TcpTargetWriteMonitor>();
+        }
+
+        writeMonitor.enableDiagnostics = false;
     }
 
     private Ur5ArticulationJointController ResolveJointController()
@@ -230,8 +260,12 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
         follower.maxJointStepDegrees = 2.80f;
+        follower.maxJointSpeedDegreesPerSecond = 252.0f;
         follower.minimumJointDeltaDegrees = 0.015f;
-        follower.maximumCommandLeadDegrees = 6.00f;
+        // The Articulation controller already limits drive targets against
+        // measured joints. A second IK-to-drive lead window creates a
+        // stop-start servo loop, so it is intentionally disabled here.
+        follower.maximumCommandLeadDegrees = 0.00f;
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.0f;
         follower.dlsDamping = 0.16f;
@@ -239,11 +273,14 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.translationOrientationHoldWeight = 8.00f;
         follower.dlsGain = 0.95f;
         follower.proximalOrientationWeight = 0.05f;
-        follower.jointDeltaSmoothing = 0.05f;
+        // The anchored teleop path already has its one upstream-style target
+        // smoothing stage. Do not add a second low-pass to DLS joint deltas.
+        follower.jointDeltaSmoothing = 0.00f;
         follower.enableStationaryDlsDamping = false;
         follower.rotationToleranceDegrees = 0.03f;
         follower.rotationBlend = 0.70f;
         follower.maxWristStepDegrees = 4.00f;
+        follower.maxWristSpeedDegreesPerSecond = 360.0f;
         follower.graspAssistPositionTolerance = 0.0015f;
         follower.graspAssistRotationToleranceDegrees = 0.35f;
         follower.enablePrecisionAssemblyTracking = true;
@@ -255,9 +292,13 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.precisionAssemblySettledRotationErrorDegrees = 0.30f;
         follower.suppressRotationOnlyIkDuringPositionControl = false;
         follower.finishVelocityTargetAfterRelease = false;
+        follower.snapTargetToActualPoseWhenQuestReleased = false;
         follower.velocityReleasePositionTolerance = 0.003f;
         follower.velocityReleaseRotationToleranceDegrees = 0.50f;
         follower.velocityReleaseSettleTimeoutSeconds = 2.0f;
+        follower.safeReleaseMaximumResidualMeters = 0.003f;
+        follower.safeReleaseMaximumResidualDegrees = 0.50f;
+        follower.safeReleaseSettleTimeoutSeconds = 0.20f;
         follower.holdJointPoseWhenTargetSettled = true;
         follower.targetStationaryHoldSeconds = 0.12f;
         follower.targetStationaryPositionEpsilon = 0.0015f;
@@ -309,6 +350,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.tcpTarget = tcpTarget;
         follower.jointController = jointController;
         follower.trajectoryPlayer = trajectoryPlayer;
+        follower.targetWriteMonitor = tcpTarget.GetComponent<TcpTargetWriteMonitor>();
         follower.questController = tcpTarget != null
             ? tcpTarget.GetComponent<Quest3TcpTargetController>()
             : null;
@@ -317,6 +359,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.pauseIkWhenVelocityTeleopIdle = follower.velocityTeleop != null;
         ApplyDefaultFollowerProfile(follower);
         follower.maxJointStepDegrees = EffectiveQuestMaxJointStepDegrees;
+        follower.maxJointSpeedDegreesPerSecond = EffectiveQuestMaxJointStepDegrees
+            * Ur5AutoSceneBootstrap.TeleopControlRateHz;
 
         Ur5ActualTcpMarker actualMarker = tcpTarget.GetComponent<Ur5ActualTcpMarker>();
         if (actualMarker == null)
@@ -356,6 +400,9 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.workspaceLimiter = tcpTarget != null
             ? tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>()
             : null;
+        velocityTeleop.targetWriteMonitor = tcpTarget != null
+            ? tcpTarget.GetComponent<TcpTargetWriteMonitor>()
+            : null;
         ApplyDefaultQuestTeleopProfile(velocityTeleop);
         ApplyQuestTeleopSpeedProfile(velocityTeleop);
         velocityTeleop.angularSpeedGain = 1.30f;
@@ -394,32 +441,46 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
         // A relative clutch maps controller displacement to TCP displacement.
         // It is intentionally not a joystick-velocity integrator.
-        velocityTeleop.linearDeadbandMeters = 0.002f;
+        velocityTeleop.linearDeadbandMeters = 0.0f;
+        // UR10_Teleop filters the derived TCP target once. Filtering the hand,
+        // then the TCP, then the joint target creates lag and target chasing.
         velocityTeleop.filterControllerPosition = false;
-        velocityTeleop.controllerPositionJitterDeadbandMeters = 0.0025f;
+        velocityTeleop.controllerPositionJitterDeadbandMeters = 0.0f;
         velocityTeleop.controllerPositionFilterSharpness = 16.0f;
         velocityTeleop.useAdaptiveControllerPositionFilter = false;
         velocityTeleop.angularDeadbandDegrees = 2.5f;
-        velocityTeleop.relativePreviewPositionScale = 3.10f;
+        velocityTeleop.relativePreviewPositionScale = 0.50f;
+        velocityTeleop.normalPositionScale = 0.50f;
+        velocityTeleop.precisionModifierPositionScale = 0.15f;
         velocityTeleop.useProgressivePositionResponse = false;
         velocityTeleop.precisionPositionScale = 2.80f;
         velocityTeleop.progressivePositionTransitionMeters = 0.030f;
         velocityTeleop.relativePreviewRotationScale = 0.80f;
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
-        velocityTeleop.useRelativePoseCommandFilter = true;
-        velocityTeleop.relativePoseCommandFilterRetention = 0.25f;
-        velocityTeleop.fineRelativePoseCommandFilterRetention = 0.40f;
-        velocityTeleop.previewMaxLinearSpeed = 0.70f;
+        velocityTeleop.useAnchoredPoseTeleopStrategy = true;
+        velocityTeleop.anchoredPoseSmoothingStep = 0.18f;
+        velocityTeleop.anchoredPosePrecisionSmoothingStep = 0.18f;
+        velocityTeleop.useRelativePoseCommandFilter = false;
+        velocityTeleop.relativePoseCommandFilterRetention = 0.0f;
+        velocityTeleop.fineRelativePoseCommandFilterRetention = 0.0f;
+        velocityTeleop.previewMaxLinearSpeed = 0.0f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
-        velocityTeleop.limitPreviewLeadToActualTcp = true;
+        // TcpTarget is the operator's logical command. Feeding the lagging
+        // actual TCP back into it creates a target-chasing oscillation.
+        velocityTeleop.limitPreviewLeadToActualTcp = false;
         velocityTeleop.maximumPreviewLeadMeters = 0.075f;
         velocityTeleop.useAccelerationLimitedPreviewTrajectory = false;
         velocityTeleop.freezeRobotWhenPositionHandStops = false;
+        velocityTeleop.previewTargetDeadbandMeters = 0.0f;
+        velocityTeleop.finePreviewTargetDeadbandMeters = 0.0f;
 
         // The left stick rotates around the physical center axis of the two pads.
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
+        velocityTeleop.normalJoystickYawSpeedDegreesPerSecond = 60.0f;
+        velocityTeleop.precisionJoystickYawSpeedDegreesPerSecond = 18.0f;
+        velocityTeleop.joystickResponseExponent = 1.0f;
         velocityTeleop.joystickPitchSpeedDegreesPerSecond = 0.0f;
         velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
@@ -432,6 +493,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 1.00f;
         velocityTeleop.fineAngularSpeedMultiplier = 1.00f;
+        velocityTeleop.enableAPrecisionModifier = true;
+        velocityTeleop.precisionModifierPositionScale = 0.30f;
 
         velocityTeleop.snapToZeroOnRelease = true;
         velocityTeleop.snapGraspApproachToVertical = true;
@@ -558,12 +621,16 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
         graspAssist.velocityTeleop = GetComponent<Ur5CartesianVelocityTeleopController>();
         graspAssist.workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
+        graspAssist.targetWriteMonitor = tcpTarget.GetComponent<TcpTargetWriteMonitor>();
         graspAssist.gripperController = robotRoot.GetComponent<Quest3RobotiqGripperController>();
         graspAssist.autoSelectNearestTarget = true;
         graspAssist.targetSearchRadius = 0.50f;
         graspAssist.maxAutoTargetSize = 0.35f;
-        graspAssist.startWithPrimaryButton = true;
-        graspAssist.startWithSecondaryButton = true;
+        // A is the manual precision modifier and B remains unbound during the
+        // virtual-UR5 teleoperation profile. Keep the assist component and its
+        // keyboard path available without competing for controller ownership.
+        graspAssist.startWithPrimaryButton = false;
+        graspAssist.startWithSecondaryButton = false;
         graspAssist.preGraspHeight = 0.12f;
         graspAssist.alignPadCenterToObjectCenter = true;
         graspAssist.padCenterOffsetAlongApproach = 0.0f;
@@ -598,6 +665,27 @@ public class Ur5ControlBootstrap : MonoBehaviour
 
         spectatorCamera.robotRoot = robotRoot;
         spectatorCamera.tcpTarget = tcpTarget;
+    }
+
+    private void ConfigureTeleopDiagnostics(
+        Ur5TcpTargetFollower follower,
+        Ur5JointTrajectoryPlayer trajectoryPlayer,
+        Ur5ArticulationJointController jointController)
+    {
+        Ur5TeleopDiagnostics diagnostics = GetComponent<Ur5TeleopDiagnostics>();
+        if (diagnostics == null)
+        {
+            diagnostics = gameObject.AddComponent<Ur5TeleopDiagnostics>();
+        }
+
+        diagnostics.enableDiagnostics = false;
+        diagnostics.teleop = GetComponent<Ur5CartesianVelocityTeleopController>();
+        diagnostics.follower = follower;
+        diagnostics.trajectoryPlayer = trajectoryPlayer;
+        diagnostics.jointController = jointController;
+        diagnostics.targetWriteMonitor = tcpTarget != null
+            ? tcpTarget.GetComponent<TcpTargetWriteMonitor>()
+            : null;
     }
 
     private void ConfigureControllerVisualizer()
@@ -662,6 +750,20 @@ public class Ur5ControlBootstrap : MonoBehaviour
         foreach (VRTeleoperationController legacyController in FindObjectsOfType<VRTeleoperationController>())
         {
             legacyController.enabled = false;
+        }
+    }
+
+    private void DisableKeyboardTargetController()
+    {
+        if (tcpTarget == null)
+        {
+            return;
+        }
+
+        TcpTargetKeyboardController keyboardController = tcpTarget.GetComponent<TcpTargetKeyboardController>();
+        if (keyboardController != null)
+        {
+            keyboardController.enabled = false;
         }
     }
 

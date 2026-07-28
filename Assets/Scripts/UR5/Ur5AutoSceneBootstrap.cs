@@ -6,39 +6,35 @@ using UnityEngine.XR;
 public static class Ur5AutoSceneBootstrap
 {
     private const float FallbackQuestRefreshRate = 72.0f;
+    /// <summary>
+    /// Matches the fixed controller publish/servo cadence used by
+    /// elpis-lab/UR10_Teleop. Rendering still follows the Quest display rate.
+    /// </summary>
+    public const float TeleopControlRateHz = 100.0f;
     private static readonly List<XRDisplaySubsystem> DisplaySubsystems = new List<XRDisplaySubsystem>();
     private static readonly List<XRInputSubsystem> InputSubsystems = new List<XRInputSubsystem>();
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void InstallAfterSceneLoad()
     {
-        ApplyQuestFloorTrackingOrigin();
-        ConfigurePassthroughCameraBackground();
-        ApplyQuestRuntimeTiming();
-        InstallStabilizer();
-        InstallTargetWorkspaceLimiter();
-        InstallCartesianVelocityTeleop();
-        InstallTcpTargetFollower();
-        InstallGripperController();
-        InstallGraspAssist();
-        InstallSpectatorCamera();
-        InstallControllerVisualizer();
+        ConfigureRuntimeEnvironment();
         SceneManager.sceneLoaded -= HandleSceneLoaded;
         SceneManager.sceneLoaded += HandleSceneLoaded;
     }
 
     private static void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        ConfigureRuntimeEnvironment();
+    }
+
+    /// <summary>
+    /// This bootstrap owns platform environment only. Ur5ControlBootstrap owns
+    /// all UR5 component creation, profiles, and legacy-controller disabling.
+    /// </summary>
+    private static void ConfigureRuntimeEnvironment()
+    {
         ApplyQuestFloorTrackingOrigin();
         ConfigurePassthroughCameraBackground();
         ApplyQuestRuntimeTiming();
-        InstallStabilizer();
-        InstallTargetWorkspaceLimiter();
-        InstallCartesianVelocityTeleop();
-        InstallTcpTargetFollower();
-        InstallGripperController();
-        InstallGraspAssist();
-        InstallSpectatorCamera();
-        InstallControllerVisualizer();
     }
 
     private static void InstallStabilizer()
@@ -433,7 +429,7 @@ public static class Ur5AutoSceneBootstrap
         float refreshRate = ResolveDisplayRefreshRate();
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = Mathf.RoundToInt(refreshRate);
-        Time.fixedDeltaTime = 1.0f / refreshRate;
+        Time.fixedDeltaTime = 1.0f / TeleopControlRateHz;
         Time.maximumDeltaTime = Mathf.Max(Time.fixedDeltaTime * 4.0f, Time.fixedDeltaTime);
     }
 

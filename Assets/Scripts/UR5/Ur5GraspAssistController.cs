@@ -21,6 +21,7 @@ public class Ur5GraspAssistController : MonoBehaviour
     public Ur5TcpTargetFollower tcpFollower;
     public Ur5CartesianVelocityTeleopController velocityTeleop;
     public TcpTargetWorkspaceLimiter workspaceLimiter;
+    public TcpTargetWriteMonitor targetWriteMonitor;
     public Quest3RobotiqGripperController gripperController;
     public Transform graspTarget;
 
@@ -329,6 +330,10 @@ public class Ur5GraspAssistController : MonoBehaviour
             waypointRotation,
             Mathf.Max(0.0f, assistRotationSpeedDegreesPerSecond) * Time.fixedDeltaTime);
         tcpTarget.SetPositionAndRotation(nextPosition, nextRotation);
+        if (targetWriteMonitor != null)
+        {
+            targetWriteMonitor.RecordWrite("GraspAssist");
+        }
 
         if (Vector3.Distance(tcpTarget.position, waypointPosition) <= waypointTolerance
             && HasActualTcpReachedTarget(state == GraspState.MoveToGrasp))
@@ -343,6 +348,10 @@ public class Ur5GraspAssistController : MonoBehaviour
             ? workspaceLimiter.ClampWorldPosition(position)
             : position;
         tcpTarget.SetPositionAndRotation(clampedPosition, rotation);
+        if (targetWriteMonitor != null)
+        {
+            targetWriteMonitor.RecordWrite("GraspAssist");
+        }
     }
 
     private bool HasActualTcpReachedTarget(bool requireFinalGraspPrecision = false)
@@ -757,6 +766,11 @@ public class Ur5GraspAssistController : MonoBehaviour
         if (workspaceLimiter == null && tcpTarget != null)
         {
             workspaceLimiter = tcpTarget.GetComponent<TcpTargetWorkspaceLimiter>();
+        }
+
+        if (targetWriteMonitor == null && tcpTarget != null)
+        {
+            targetWriteMonitor = tcpTarget.GetComponent<TcpTargetWriteMonitor>();
         }
 
         if (gripperController == null && robotRoot != null)
