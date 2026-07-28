@@ -196,6 +196,15 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Range(1.0f, 60.0f)] public float precisionJoystickYawSpeedDegreesPerSecond = 10.0f;
     [Range(1.0f, 3.0f)] public float joystickResponseExponent = 1.5f;
 
+    [Header("三模式离合控制")]
+    [Tooltip("启用后，右手 Grip 进入显式 Idle/Clutched/Paused/Fault 状态机；A=fine，B=insert，无按键=free。")]
+    public bool enableThreeModeController = true;
+    [Tooltip("右手 B 键请求 insert 模式；优先级高于 A 键 fine 模式。")]
+    public bool useRightSecondaryButtonForInsertMode = true;
+    public Ur5TeleopModeConfig freeModeConfig = Ur5ClutchModeController.DefaultFreeConfig;
+    public Ur5TeleopModeConfig fineModeConfig = Ur5ClutchModeController.DefaultFineConfig;
+    public Ur5TeleopModeConfig insertModeConfig = Ur5ClutchModeController.DefaultInsertConfig;
+
     [Header("Output")]
     public bool sendToSpeedlClient = true;
     public bool logDeviceStatus = true;
@@ -209,10 +218,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool wasPositionClutched;
     private bool wasRotationClutched;
     private bool wasFinePositionControlActive;
+    private Ur5TeleopMode requestedTeleopMode;
+    private Ur5TeleopMode previousPositionTeleopMode;
+    private Ur5TeleopStepResult latestClutchModeStep;
 
     private Vector3 positionNeutralWorldPosition;
     private Quaternion rotationNeutralWorldRotation;
     private Vector3 positionClutchStartTargetWorldPosition;
+    private Vector3 positionClutchStartActualToolWorldPosition;
     private Quaternion rotationClutchStartTargetWorldRotation;
     private Quaternion rotationClutchStartGraspWorldRotation;
     // Y 姿态通道有自己的零点，不能复用摇杆/普通姿态的 clutch，
@@ -226,6 +239,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private readonly Ur5RelativePoseCommandFilter relativePoseCommandFilter = new Ur5RelativePoseCommandFilter();
     private readonly Ur5RelativePoseClutchMapper relativePoseClutchMapper = new Ur5RelativePoseClutchMapper();
     private readonly Ur5AnchoredPoseTeleopStrategy anchoredPoseTeleop = new Ur5AnchoredPoseTeleopStrategy();
+    private readonly Ur5ClutchModeController clutchModeController = new Ur5ClutchModeController();
     private bool hasFilteredControllerPosition;
     private bool controllerPositionFilterIsSettling;
     private Vector3 latestPositionWorld;
@@ -277,6 +291,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 ConstrainedCommandPosition { get; private set; }
     public bool IsPreviewLeadLimited { get; private set; }
     public bool IsPrecisionModifierHeld { get; private set; }
+    public Ur5TeleopMode ActiveTeleopMode => enableThreeModeController
+        ? latestClutchModeStep.ActiveMode
+        : (IsFinePositionControlActive ? Ur5TeleopMode.Fine : Ur5TeleopMode.Free);
+    public Ur5TeleopControllerState TeleopControllerState => enableThreeModeController
+        ? latestClutchModeStep.State
+        : (IsCommandActive ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle);
+    public Ur5TeleopModeConfig ActiveTeleopModeConfig => GetActiveTeleopModeConfig();
     public bool IsAnchoredPoseStrategyActive => useAnchoredPoseTeleopStrategy && anchoredPoseTeleop.IsTracking;
     public float ActiveAnchoredPoseSmoothingStep => GetAnchoredPoseSmoothingStep();
     public Vector3 RawControllerPositionWorld => latestRawPositionWorld;
@@ -298,6 +319,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool IsFineControlActive { get; private set; }
     /// <summary>右手 Grip + 右摇杆按下时的无跳变精细平移模式。</summary>
     public bool IsFinePositionControlActive { get; private set; }
+    public bool IsInsertModeActive { get; private set; }
     public bool IsWorkspaceLimited { get; private set; }
     public bool IsInputPoseValid { get; private set; }
     public Vector3 RawBaseLinearVelocity => rawBaseLinearVelocity;
@@ -448,11 +470,15 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             }
         }
         IsPrecisionModifierHeld = ReadAPrecisionModifier(positionDevice);
-        IsFinePositionControlActive = IsPositionClutched && IsPrecisionModifierHeld;
-        IsFineControlActive = IsPrecisionModifierHeld && (IsPositionClutched || IsRotationClutched);
+        requestedTeleopMode = ResolveRequestedTeleopMode();
+        IsInsertModeActive = IsPositionClutched && requestedTeleopMode == Ur5TeleopMode.Insert;
+        IsFinePositionControlActive = IsPositionClutched && requestedTeleopMode == Ur5TeleopMode.Fine;
+        IsFineControlActive = requestedTeleopMode == Ur5TeleopMode.Fine
+            && (IsPositionClutched || IsRotationClutched);
+        UpdateClutchModeState(positionWorld, rotationWorld);
 
         CaptureClutchOrigins(positionWorld, rotationWorld);
-        RebasePositionClutchForFineControl(positionWorld, rotationWorld);
+        RebasePositionClutchForModeChange(positionWorld, rotationWorld);
         UpdatePositionHandStopHold(Time.deltaTime);
         CalculateRawVelocity(positionWorld, rotationWorld);
         ApplySafetyLimitsAndFiltering(Time.deltaTime);
@@ -460,6 +486,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         wasPositionClutched = IsPositionClutched;
         wasRotationClutched = IsRotationClutched;
         wasSecondaryPoseRotationActive = isSecondaryPoseRotationActive;
+        previousPositionTeleopMode = requestedTeleopMode;
     }
 
     private void FixedUpdate()
@@ -475,7 +502,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             speedlClient.SetCommand(
                 filteredBaseLinearVelocity,
                 filteredBaseAngularVelocity,
-                IsCommandActive && IsInputPoseValid);
+                IsCommandActive && IsInputPoseValid && IsTeleopMotionAllowed());
         }
     }
 
@@ -496,6 +523,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         relativePoseCommandFilter.Clear();
         relativePoseClutchMapper.End();
         anchoredPoseTeleop.Pause();
+        clutchModeController.Pause();
 
         if (speedlClient != null)
         {
@@ -516,6 +544,73 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
     }
 
+    private Ur5TeleopMode ResolveRequestedTeleopMode()
+    {
+        if (!enableThreeModeController)
+        {
+            return IsPrecisionModifierHeld || ReadFineControl(positionDevice)
+                ? Ur5TeleopMode.Fine
+                : Ur5TeleopMode.Free;
+        }
+
+        if (useRightSecondaryButtonForInsertMode && ReadSecondaryButton(positionDevice))
+        {
+            return Ur5TeleopMode.Insert;
+        }
+
+        return IsPrecisionModifierHeld || ReadFineControl(positionDevice)
+            ? Ur5TeleopMode.Fine
+            : Ur5TeleopMode.Free;
+    }
+
+    private void UpdateClutchModeState(Vector3 positionWorld, Quaternion rotationWorld)
+    {
+        freeModeConfig = freeModeConfig.Sanitized();
+        fineModeConfig = fineModeConfig.Sanitized();
+        insertModeConfig = insertModeConfig.Sanitized();
+        clutchModeController.Configure(freeModeConfig, fineModeConfig, insertModeConfig);
+
+        if (!enableThreeModeController)
+        {
+            latestClutchModeStep = new Ur5TeleopStepResult(
+                IsPositionClutched ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle,
+                requestedTeleopMode,
+                GetActiveTeleopModeConfig(),
+                IsPositionClutched,
+                false,
+                Vector3.zero,
+                0.0f,
+                tcpPreviewTarget != null ? tcpPreviewTarget.position : Vector3.zero,
+                tcpPreviewTarget != null ? tcpPreviewTarget.rotation : Quaternion.identity);
+            return;
+        }
+
+        latestClutchModeStep = clutchModeController.Step(new Ur5TeleopStepInput(
+            gripHeld: IsPositionClutched,
+            requestedMode: requestedTeleopMode,
+            controllerPosition: latestPositionValid ? positionWorld : Vector3.zero,
+            controllerRotation: latestRotationValid ? rotationWorld : Quaternion.identity,
+            actualTcpPosition: tcpPreviewTarget != null ? GetActualToolPosition() : Vector3.zero,
+            actualTcpRotation: tcpPreviewTarget != null ? GetActualToolRotation() : Quaternion.identity,
+            isInputPoseValid: latestPositionValid,
+            isRobotStateValid: tcpPreviewTarget != null && IsRobotOutputReady(),
+            isSafetyAccepted: targetWriteMonitor == null || !targetWriteMonitor.HadWriteConflictThisFrame));
+    }
+
+    private bool IsRobotOutputReady()
+    {
+        return !sendToSpeedlClient
+            || speedlClient == null
+            || !speedlClient.enableRealRobotOutput
+            || speedlClient.IsConnected;
+    }
+
+    private bool IsTeleopMotionAllowed()
+    {
+        return !enableThreeModeController
+            || latestClutchModeStep.State == Ur5TeleopControllerState.Clutched;
+    }
+
     private void CaptureClutchOrigins(Vector3 positionWorld, Quaternion rotationWorld)
     {
         if (IsPositionClutched && !wasPositionClutched)
@@ -528,6 +623,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 Vector3 actualToolPosition = GetActualToolPosition();
                 Quaternion actualToolRotation = GetActualToolRotation();
                 positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
+                positionClutchStartActualToolWorldPosition = actualToolPosition;
                 relativePoseClutchMapper.Begin(
                     positionWorld,
                     latestRotationValid ? latestRotationWorld : Quaternion.identity,
@@ -595,6 +691,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private void CalculateRawVelocity(Vector3 positionWorld, Quaternion rotationWorld)
     {
+        if (!IsTeleopMotionAllowed())
+        {
+            rawBaseLinearVelocity = Vector3.zero;
+            rawBaseAngularVelocity = Vector3.zero;
+            return;
+        }
+
         rawBaseLinearVelocity = IsPositionClutched
             ? CalculateBaseLinearVelocity(positionWorld)
             : Vector3.zero;
@@ -607,6 +710,16 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private void ApplySafetyLimitsAndFiltering(float deltaTime)
     {
+        if (!IsTeleopMotionAllowed())
+        {
+            limitedBaseLinearVelocity = Vector3.zero;
+            limitedBaseAngularVelocity = Vector3.zero;
+            filteredBaseLinearVelocity = Vector3.zero;
+            filteredBaseAngularVelocity = Vector3.zero;
+            IsWorkspaceLimited = false;
+            return;
+        }
+
         limitedBaseLinearVelocity = ApplyAxisLocks(rawBaseLinearVelocity, allowBaseX, allowBaseY, allowBaseZ);
         limitedBaseAngularVelocity = ApplyAxisLocks(rawBaseAngularVelocity, allowAngularX, allowAngularY, allowAngularZ);
 
@@ -650,7 +763,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     {
         Vector3 worldDelta = positionWorld - positionNeutralWorldPosition;
         Vector3 baseDelta = WorldDirectionToBase(worldDelta);
-        Vector3 velocity = ApplyVectorDeadband(baseDelta, linearDeadbandMeters) * Mathf.Max(0.0f, linearSpeedGain);
+        Ur5TeleopModeConfig config = GetActiveTeleopModeConfig();
+        float deadband = enableThreeModeController ? config.DeadbandMeters : linearDeadbandMeters;
+        float gain = enableThreeModeController ? linearSpeedGain * config.TranslationGain : linearSpeedGain;
+        Vector3 velocity = ApplyVectorDeadband(baseDelta, deadband) * Mathf.Max(0.0f, gain);
+        velocity = ApplyActiveBaseTranslationConstraint(velocity);
         float speedLimit = IsFineControlActive
             ? maxLinearSpeed * Mathf.Clamp01(fineLinearSpeedMultiplier)
             : maxLinearSpeed;
@@ -685,7 +802,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             * Mathf.Max(0.0f, Mathf.Abs(angleDegrees) - angularDeadbandDegrees)
             * Mathf.Deg2Rad;
         Vector3 baseAxis = WorldDirectionToBase(worldAxis.normalized);
-        Vector3 angularVelocity = baseAxis.normalized * signedAngleRadians * Mathf.Max(0.0f, angularSpeedGain);
+        Ur5TeleopModeConfig config = GetActiveTeleopModeConfig();
+        float gain = enableThreeModeController ? angularSpeedGain * config.RotationGain : angularSpeedGain;
+        Vector3 angularVelocity = baseAxis.normalized * signedAngleRadians * Mathf.Max(0.0f, gain);
         float angularSpeedLimit = IsFineControlActive
             ? maxAngularSpeedRadiansPerSecond * Mathf.Clamp01(fineAngularSpeedMultiplier)
             : maxAngularSpeedRadiansPerSecond;
@@ -706,7 +825,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             ? Mathf.Clamp01(fineAngularSpeedMultiplier)
             : 1.0f;
         float yawRadiansPerSecond = GetJoystickYawInput(joystick)
-            * joystickYawSpeedDegreesPerSecond * Mathf.Deg2Rad * fineMultiplier;
+            * GetActiveJoystickYawSpeedDegreesPerSecond() * Mathf.Deg2Rad * fineMultiplier;
         float pitchInput = invertJoystickPitch ? -joystick.y : joystick.y;
         float pitchRadiansPerSecond = pitchInput * joystickPitchSpeedDegreesPerSecond * Mathf.Deg2Rad * fineMultiplier;
         float rollRadiansPerSecond = 0.0f;
@@ -839,7 +958,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private void ApplyRelativePosePreview(float deltaTime)
     {
-        if (!IsCommandActive)
+        if (!IsCommandActive || !IsTeleopMotionAllowed())
         {
             // Grip release is an ownership boundary. Do not write TcpTarget
             // here: the follower performs one explicit safe freeze instead.
@@ -929,6 +1048,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             }
         }
 
+        requestedPosition = ApplyActiveModePositionConstraints(requestedPosition);
         LogicalCommandPosition = requestedPosition;
         LogicalCommandRotation = requestedRotation;
         if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
@@ -1221,6 +1341,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetRelativePoseCommandFilterRetention()
     {
+        if (enableThreeModeController && IsPositionClutched)
+        {
+            return GetActiveTeleopModeConfig().CommandFilterRetention;
+        }
+
         return IsFineControlActive
             ? Mathf.Clamp(fineRelativePoseCommandFilterRetention, 0.0f, 0.95f)
             : Mathf.Clamp(relativePoseCommandFilterRetention, 0.0f, 0.95f);
@@ -1228,6 +1353,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetAnchoredPoseSmoothingStep()
     {
+        if (enableThreeModeController && IsPositionClutched)
+        {
+            return GetActiveTeleopModeConfig().PoseSmoothingStep;
+        }
+
         return Mathf.Clamp01(IsPrecisionModifierHeld
             ? anchoredPosePrecisionSmoothingStep
             : anchoredPoseSmoothingStep);
@@ -1256,10 +1386,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     }
 
     /// <summary>
-    /// 精细模式切换时重新捕获右手与 TCP 的相对基准。这样按下或松开右摇杆
-    /// 不会改变当前目标点，只会改变之后手部位移的分辨率。
+    /// free/fine/insert 切换时重新捕获右手与当前命令的相对基准。
+    /// 这样模式只改变后续位移分辨率或轴约束，不会在切换采样点产生目标跳变。
     /// </summary>
-    private void RebasePositionClutchForFineControl(Vector3 positionWorld, Quaternion rotationWorld)
+    private void RebasePositionClutchForModeChange(Vector3 positionWorld, Quaternion rotationWorld)
     {
         if (!IsPositionClutched || !latestPositionValid)
         {
@@ -1267,7 +1397,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
-        if (IsFinePositionControlActive == wasFinePositionControlActive)
+        bool modeChanged = enableThreeModeController
+            ? wasPositionClutched && requestedTeleopMode != previousPositionTeleopMode
+            : IsFinePositionControlActive != wasFinePositionControlActive;
+        if (!modeChanged)
         {
             return;
         }
@@ -1276,6 +1409,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         if (tcpPreviewTarget != null)
         {
             positionClutchStartTargetWorldPosition = tcpPreviewTarget.position;
+            positionClutchStartActualToolWorldPosition = tcpPreviewTarget.position;
             relativePoseClutchMapper.Rebase(
                 positionWorld,
                 latestRotationValid ? rotationWorld : Quaternion.identity,
@@ -1301,6 +1435,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetRelativePreviewRotationScale()
     {
+        if (enableThreeModeController && IsPositionClutched)
+        {
+            return GetActiveTeleopModeConfig().RotationGain;
+        }
+
         float scale = Mathf.Max(0.0f, relativePreviewRotationScale);
         return IsPrecisionModifierHeld
             ? scale * Mathf.Clamp01(fineAngularSpeedMultiplier)
@@ -1309,6 +1448,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private float GetActivePositionScale()
     {
+        if (enableThreeModeController && IsPositionClutched)
+        {
+            return GetActiveTeleopModeConfig().TranslationGain;
+        }
+
         if (enableAPrecisionModifier)
         {
             return IsPrecisionModifierHeld
@@ -1317,6 +1461,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         return Mathf.Max(0.0f, relativePreviewPositionScale);
+    }
+
+    private Ur5TeleopModeConfig GetActiveTeleopModeConfig()
+    {
+        switch (requestedTeleopMode)
+        {
+            case Ur5TeleopMode.Fine:
+                return fineModeConfig.Sanitized();
+            case Ur5TeleopMode.Insert:
+                return insertModeConfig.Sanitized();
+            default:
+                return freeModeConfig.Sanitized();
+        }
     }
 
     private float GetActiveJoystickYawSpeedDegreesPerSecond()
@@ -1329,6 +1486,38 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         return Mathf.Max(0.0f, joystickYawSpeedDegreesPerSecond);
+    }
+
+    private Vector3 ApplyActiveModePositionConstraints(Vector3 requestedPosition)
+    {
+        if (!enableThreeModeController || !IsPositionClutched)
+        {
+            return requestedPosition;
+        }
+
+        Ur5TeleopModeConfig config = GetActiveTeleopModeConfig();
+        Vector3 deltaFromClutch = requestedPosition - positionClutchStartActualToolWorldPosition;
+        if (config.ConstrainToInsertAxis)
+        {
+            // Insert 轴按 robot base frame 配置，运行时转换到 world，避免场景父级旋转污染插入方向。
+            deltaFromClutch = Vector3.Project(deltaFromClutch, GetInsertAxisWorld(config));
+        }
+
+        if (config.MaxLinearDeltaMeters > 0.0f)
+        {
+            deltaFromClutch = Vector3.ClampMagnitude(deltaFromClutch, config.MaxLinearDeltaMeters);
+        }
+
+        return positionClutchStartActualToolWorldPosition + deltaFromClutch;
+    }
+
+    private Vector3 GetInsertAxisWorld(Ur5TeleopModeConfig config)
+    {
+        Vector3 axis = config.InsertAxis.sqrMagnitude > 0.000001f
+            ? config.InsertAxis.normalized
+            : Vector3.forward;
+        Vector3 worldAxis = robotBaseFrame != null ? robotBaseFrame.TransformDirection(axis) : axis;
+        return worldAxis.sqrMagnitude > 0.000001f ? worldAxis.normalized : Vector3.forward;
     }
 
     private float ApplyJoystickResponse(float value)
@@ -1382,6 +1571,25 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             allowX ? value.x : 0.0f,
             allowY ? value.y : 0.0f,
             allowZ ? value.z : 0.0f);
+    }
+
+    private Vector3 ApplyActiveBaseTranslationConstraint(Vector3 baseVelocity)
+    {
+        if (!enableThreeModeController || !IsInsertModeActive)
+        {
+            return baseVelocity;
+        }
+
+        Ur5TeleopModeConfig config = GetActiveTeleopModeConfig();
+        if (!config.ConstrainToInsertAxis)
+        {
+            return baseVelocity;
+        }
+
+        Vector3 baseAxis = config.InsertAxis.sqrMagnitude > 0.000001f
+            ? config.InsertAxis.normalized
+            : Vector3.forward;
+        return Vector3.Project(baseVelocity, baseAxis);
     }
 
     private Vector3 ApplyVectorDeadband(Vector3 value, float deadband)
@@ -1882,5 +2090,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);
         gripPressThreshold = Mathf.Clamp01(gripPressThreshold);
         gripReleaseThreshold = Mathf.Clamp(gripReleaseThreshold, 0.0f, gripPressThreshold);
+        freeModeConfig = freeModeConfig.Sanitized();
+        fineModeConfig = fineModeConfig.Sanitized();
+        insertModeConfig = insertModeConfig.Sanitized();
     }
 }

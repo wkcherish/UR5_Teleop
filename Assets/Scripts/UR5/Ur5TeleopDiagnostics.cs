@@ -67,6 +67,8 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " handDelta=" + (teleop != null ? teleop.ControllerPositionInputDifferenceMeters.ToString("F4") : "n/a")
             + " gate=" + (teleop != null && teleop.IsControllerPositionNoiseGateHolding ? "hold" : "pass")
             + " strategy=" + (teleop != null && teleop.IsAnchoredPoseStrategyActive ? "anchored" : "idle")
+            + " mode=" + (teleop != null ? teleop.ActiveTeleopMode.ToString() : "n/a")
+            + " state=" + (teleop != null ? teleop.TeleopControllerState.ToString() : "n/a")
             + " smoothStep=" + (teleop != null ? teleop.ActiveAnchoredPoseSmoothingStep.ToString("F2") : "n/a")
             + " logical=" + (teleop != null ? teleop.LogicalCommandPosition.ToString("F4") : "n/a")
             + " filtered=" + (teleop != null ? teleop.FilteredCommandPosition.ToString("F4") : "n/a")
