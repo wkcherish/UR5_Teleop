@@ -4,6 +4,26 @@ using UnityEngine;
 public class Ur5Continuous6DofClutchControllerTests
 {
     [Test]
+    public void ContinuousController_DefaultsToSingleRightHandOwnership()
+    {
+        GameObject owner = new GameObject("teleop-test");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+
+            Assert.IsTrue(teleop.enableContinuous6DofClutch);
+            Assert.AreEqual(UnityEngine.XR.XRNode.RightHand, teleop.positionControllerNode);
+            Assert.AreEqual(UnityEngine.XR.XRNode.RightHand, teleop.rotationControllerNode);
+            Assert.IsTrue(teleop.usePositionGripAsDeadman);
+            Assert.IsTrue(teleop.useRotationGripAsDeadman);
+        }
+        finally
+        {
+            Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
     public void DefaultConfig_UsesApprovedSingleModeParameters()
     {
         Ur5Continuous6DofConfig config = Ur5Continuous6DofConfig.Default;

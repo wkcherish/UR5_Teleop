@@ -33,6 +33,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Tooltip("Locked is the pick-and-place default: translation is tracked while the TCP attitude is held. Joystick and controller-pose modes are optional Inspector-only modes for special tasks.")]
     public RotationInputMode rotationInputMode = RotationInputMode.Locked;
 
+    [Header("单模式 6DoF 离合")]
+    [Tooltip("标准 Quest 控制：右手 Grip 同时控制 TCP 平移与完整三轴旋转。")]
+    public bool enableContinuous6DofClutch = true;
+    public Ur5Continuous6DofConfig continuous6DofConfig = Ur5Continuous6DofConfig.Default;
+
     [Header("Right Controller Position Stabilization")]
     [Tooltip("Rejects millimetre-level Quest controller jitter before it can move the TCP target. This affects only the right-hand Cartesian command, never joint-state recording.")]
     public bool filterControllerPosition = true;
@@ -240,6 +245,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private readonly Ur5RelativePoseClutchMapper relativePoseClutchMapper = new Ur5RelativePoseClutchMapper();
     private readonly Ur5AnchoredPoseTeleopStrategy anchoredPoseTeleop = new Ur5AnchoredPoseTeleopStrategy();
     private readonly Ur5ClutchModeController clutchModeController = new Ur5ClutchModeController();
+    private readonly Ur5Continuous6DofClutchController continuous6DofController =
+        new Ur5Continuous6DofClutchController(Ur5Continuous6DofConfig.Default);
+    private Ur5Continuous6DofStepResult latestContinuous6DofStep;
     private bool hasFilteredControllerPosition;
     private bool controllerPositionFilterIsSettling;
     private Vector3 latestPositionWorld;
@@ -291,13 +299,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 ConstrainedCommandPosition { get; private set; }
     public bool IsPreviewLeadLimited { get; private set; }
     public bool IsPrecisionModifierHeld { get; private set; }
-    public Ur5TeleopMode ActiveTeleopMode => enableThreeModeController
+    public Ur5TeleopMode ActiveTeleopMode => enableContinuous6DofClutch
+        ? Ur5TeleopMode.Free
+        : enableThreeModeController
         ? latestClutchModeStep.ActiveMode
         : (IsFinePositionControlActive ? Ur5TeleopMode.Fine : Ur5TeleopMode.Free);
-    public Ur5TeleopControllerState TeleopControllerState => enableThreeModeController
+    public Ur5TeleopControllerState TeleopControllerState => enableContinuous6DofClutch
+        ? latestContinuous6DofStep.State
+        : enableThreeModeController
         ? latestClutchModeStep.State
         : (IsCommandActive ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle);
     public Ur5TeleopModeConfig ActiveTeleopModeConfig => GetActiveTeleopModeConfig();
+    public bool EnableContinuous6DofClutch => enableContinuous6DofClutch;
+    public Ur5Continuous6DofFaultReason Continuous6DofFaultReason =>
+        latestContinuous6DofStep.FaultReason;
+    public float ContinuousControllerDistanceMeters =>
+        latestContinuous6DofStep.ControllerDistanceMeters;
+    public float ContinuousControllerAngleDegrees =>
+        latestContinuous6DofStep.ControllerAngleDegrees;
+    public float ContinuousTranslationGain =>
+        latestContinuous6DofStep.TranslationGain;
+    public float ContinuousRotationGain =>
+        latestContinuous6DofStep.RotationGain;
     public bool IsAnchoredPoseStrategyActive => useAnchoredPoseTeleopStrategy && anchoredPoseTeleop.IsTracking;
     public float ActiveAnchoredPoseSmoothingStep => GetAnchoredPoseSmoothingStep();
     public Vector3 RawControllerPositionWorld => latestRawPositionWorld;
@@ -423,8 +446,29 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && useSecondaryButtonForJoystickRoll
             && ReadSecondaryButton(rotationDevice);
 
-        UpdateLeftControllerSafetyPose();
+        bool continuousPoseValid = hasPosition && hasRotation;
+        bool continuousGripHeld = enableContinuous6DofClutch
+            && continuousPoseValid
+            && (!usePositionGripAsDeadman
+                || ReadGripDeadman(positionDevice, ref positionGripLatched));
+
+        UpdateLeftControllerSafetyPose(blockPrimaryPose: continuousGripHeld);
         SynchronizeOrientationAfterReadyPose();
+
+        if (enableContinuous6DofClutch)
+        {
+            UpdateContinuous6DofInput(
+                hasPosition,
+                positionWorld,
+                hasRotation,
+                rotationWorld,
+                continuousGripHeld);
+            wasPositionClutched = IsPositionClutched;
+            wasRotationClutched = IsRotationClutched;
+            wasSecondaryPoseRotationActive = isSecondaryPoseRotationActive;
+            previousPositionTeleopMode = requestedTeleopMode;
+            return;
+        }
 
         IsPositionClutched = hasPosition
             && (!usePositionGripAsDeadman || ReadGripDeadman(positionDevice, ref positionGripLatched));
@@ -524,6 +568,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         relativePoseClutchMapper.End();
         anchoredPoseTeleop.Pause();
         clutchModeController.Pause();
+        continuous6DofController.Pause();
+        latestContinuous6DofStep = CreateContinuousInactiveStep(
+            Ur5TeleopControllerState.Paused,
+            Ur5Continuous6DofFaultReason.None);
 
         if (speedlClient != null)
         {
@@ -597,6 +645,69 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             isSafetyAccepted: targetWriteMonitor == null || !targetWriteMonitor.HadWriteConflictThisFrame));
     }
 
+    private void UpdateContinuous6DofInput(
+        bool hasPosition,
+        Vector3 positionWorld,
+        bool hasRotation,
+        Quaternion rotationWorld,
+        bool gripHeld)
+    {
+        bool poseValid = hasPosition && hasRotation;
+        bool safetyPoseOwnsTarget = leftPrimaryWasPressed
+            || (tcpFollower != null && tcpFollower.IsReadyPoseActive);
+
+        if (safetyPoseOwnsTarget)
+        {
+            // 左手 X/ready pose 是显式安全写入源；取得所有权后必须要求
+            // 右手 Grip 先释放再重新离合，避免同一轮 clutch 接着写旧基准。
+            continuous6DofController.Pause();
+            latestContinuous6DofStep = CreateContinuousInactiveStep(
+                Ur5TeleopControllerState.Paused,
+                Ur5Continuous6DofFaultReason.None);
+            IsPositionClutched = false;
+            IsRotationClutched = false;
+            IsInputPoseValid = poseValid;
+            return;
+        }
+
+        IsPositionClutched = gripHeld;
+        IsRotationClutched = gripHeld;
+        IsInputPoseValid = poseValid;
+        IsFineControlActive = false;
+        IsFinePositionControlActive = false;
+        IsInsertModeActive = false;
+        isSecondaryPoseRotationActive = false;
+        IsPrecisionModifierHeld = false;
+        requestedTeleopMode = Ur5TeleopMode.Free;
+
+        continuous6DofConfig = continuous6DofConfig.Sanitized();
+        continuous6DofController.Configure(continuous6DofConfig);
+        latestContinuous6DofStep = continuous6DofController.Step(
+            new Ur5Continuous6DofStepInput(
+                gripHeld,
+                positionWorld,
+                rotationWorld,
+                tcpPreviewTarget != null ? GetActualToolPosition() : Vector3.zero,
+                tcpPreviewTarget != null ? GetActualToolRotation() : Quaternion.identity,
+                poseValid,
+                tcpPreviewTarget != null && IsRobotOutputReady(),
+                targetWriteMonitor == null || !targetWriteMonitor.HadWriteConflictThisFrame));
+
+        if (latestContinuous6DofStep.WasAnchoredThisStep)
+        {
+            relativePoseCommandFilter.Reset(
+                latestContinuous6DofStep.TargetPosition,
+                latestContinuous6DofStep.TargetRotation);
+        }
+
+        rawBaseLinearVelocity = Vector3.zero;
+        rawBaseAngularVelocity = Vector3.zero;
+        limitedBaseLinearVelocity = Vector3.zero;
+        limitedBaseAngularVelocity = Vector3.zero;
+        filteredBaseLinearVelocity = Vector3.zero;
+        filteredBaseAngularVelocity = Vector3.zero;
+    }
+
     private bool IsRobotOutputReady()
     {
         return !sendToSpeedlClient
@@ -607,6 +718,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private bool IsTeleopMotionAllowed()
     {
+        if (enableContinuous6DofClutch)
+        {
+            return latestContinuous6DofStep.State == Ur5TeleopControllerState.Clutched;
+        }
+
         return !enableThreeModeController
             || latestClutchModeStep.State == Ur5TeleopControllerState.Clutched;
     }
@@ -920,6 +1036,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
+        if (enableContinuous6DofClutch)
+        {
+            ApplyContinuous6DofPreview(deltaTime);
+            return;
+        }
+
         if (unityPreviewMode == UnityPreviewMode.RelativePoseTarget)
         {
             ApplyRelativePosePreview(deltaTime);
@@ -1086,6 +1208,69 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
     }
 
+    private void ApplyContinuous6DofPreview(float deltaTime)
+    {
+        if (tcpPreviewTarget == null
+            || latestContinuous6DofStep.State != Ur5TeleopControllerState.Clutched
+            || !latestContinuous6DofStep.IsMotionCommandActive)
+        {
+            return;
+        }
+
+        Vector3 requestedPosition = latestContinuous6DofStep.TargetPosition;
+        Quaternion requestedRotation = latestContinuous6DofStep.TargetRotation;
+        LogicalCommandPosition = requestedPosition;
+        LogicalCommandRotation = requestedRotation;
+        IsPreviewLeadLimited = false;
+
+        if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
+        {
+            requestedPosition = workspaceLimiter.ClampWorldPosition(requestedPosition);
+        }
+
+        ConstrainedCommandPosition = requestedPosition;
+        if (!relativePoseCommandFilter.FilterByTimeConstants(
+            requestedPosition,
+            requestedRotation,
+            continuous6DofConfig.PositionTimeConstantSeconds,
+            continuous6DofConfig.RotationTimeConstantSeconds,
+            deltaTime,
+            continuous6DofConfig.MaxLinearSpeedMetersPerSecond,
+            continuous6DofConfig.MaxAngularSpeedDegreesPerSecond,
+            out Vector3 filteredPosition,
+            out Quaternion filteredRotation))
+        {
+            continuous6DofController.Pause();
+            latestContinuous6DofStep = CreateContinuousInactiveStep(
+                Ur5TeleopControllerState.Paused,
+                Ur5Continuous6DofFaultReason.None);
+            return;
+        }
+
+        FilteredCommandPosition = filteredPosition;
+        FilteredCommandRotation = filteredRotation;
+        tcpPreviewTarget.SetPositionAndRotation(filteredPosition, filteredRotation);
+        targetWriteMonitor?.RecordWrite("QuestTeleopContinuous6Dof");
+    }
+
+    private Ur5Continuous6DofStepResult CreateContinuousInactiveStep(
+        Ur5TeleopControllerState state,
+        Ur5Continuous6DofFaultReason faultReason)
+    {
+        return new Ur5Continuous6DofStepResult(
+            state,
+            faultReason,
+            isMotionCommandActive: false,
+            wasAnchoredThisStep: false,
+            controllerDistanceMeters: 0.0f,
+            controllerAngleDegrees: 0.0f,
+            translationGain: 0.0f,
+            rotationGain: 0.0f,
+            mappedAngleDegrees: 0.0f,
+            targetPosition: tcpPreviewTarget != null ? tcpPreviewTarget.position : Vector3.zero,
+            targetRotation: tcpPreviewTarget != null ? tcpPreviewTarget.rotation : Quaternion.identity);
+    }
+
     private Quaternion CalculateRelativePreviewRotation(Quaternion rotationWorld)
     {
         Quaternion rotationDelta = rotationWorld * Quaternion.Inverse(rotationNeutralWorldRotation);
@@ -1146,7 +1331,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return Quaternion.LookRotation(snappedApproach, jawUp.normalized);
     }
 
-    private void UpdateLeftControllerSafetyPose()
+    private void UpdateLeftControllerSafetyPose(bool blockPrimaryPose)
     {
         if (rotationControllerNode != XRNode.LeftHand
             || !rotationDevice.isValid
@@ -1168,7 +1353,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         // X/Y 属于左手安全控制，必须同时满足左手 Grip，不能被偶然按键触发。
         bool leftGripHeld = !useRotationGripAsDeadman
             || ReadGripDeadman(rotationDevice, ref rotationGripLatched);
-        bool primaryPressed = leftGripHeld
+        bool primaryPressed = !blockPrimaryPose
+            && leftGripHeld
             && enableLeftPrimarySnapDown
             && rotationDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryValue)
             && primaryValue;
@@ -2090,6 +2276,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);
         gripPressThreshold = Mathf.Clamp01(gripPressThreshold);
         gripReleaseThreshold = Mathf.Clamp(gripReleaseThreshold, 0.0f, gripPressThreshold);
+        continuous6DofConfig = continuous6DofConfig.Sanitized();
         freeModeConfig = freeModeConfig.Sanitized();
         fineModeConfig = fineModeConfig.Sanitized();
         insertModeConfig = insertModeConfig.Sanitized();
