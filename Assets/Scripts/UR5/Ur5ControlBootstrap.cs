@@ -432,12 +432,17 @@ public class Ur5ControlBootstrap : MonoBehaviour
             return;
         }
 
+        // 标准 Quest 链路只有右手 Grip + 右手完整 6DoF；旧三模式/左手旋转仅保留为 Inspector 兼容项。
+        velocityTeleop.enableContinuous6DofClutch = true;
+        velocityTeleop.continuous6DofConfig = Ur5Continuous6DofConfig.Default;
         velocityTeleop.positionControllerNode = UnityEngine.XR.XRNode.RightHand;
-        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.LeftHand;
+        velocityTeleop.rotationControllerNode = UnityEngine.XR.XRNode.RightHand;
         velocityTeleop.usePositionGripAsDeadman = true;
         velocityTeleop.useRotationGripAsDeadman = true;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Joystick;
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        velocityTeleop.enableThreeModeController = false;
+        velocityTeleop.useRightSecondaryButtonForInsertMode = false;
 
         // A relative clutch maps controller displacement to TCP displacement.
         // It is intentionally not a joystick-velocity integrator.
@@ -475,7 +480,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.previewTargetDeadbandMeters = 0.0f;
         velocityTeleop.finePreviewTargetDeadbandMeters = 0.0f;
 
-        // The left stick rotates around the physical center axis of the two pads.
+        // 左摇杆旋转在单模式标准链路中关闭，避免形成第二个姿态写入入口。
         velocityTeleop.rotationJoystickDeadband = 0.12f;
         velocityTeleop.joystickYawSpeedDegreesPerSecond = 220.0f;
         velocityTeleop.normalJoystickYawSpeedDegreesPerSecond = 60.0f;
@@ -487,22 +492,21 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.enableLeftSecondaryPoseRotation = false;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
 
-        // Precision is the default XR behavior. The old thumbstick-click mode
-        // remains available for backward compatibility but is disabled here.
+        // 精细响应由连续 6DoF 增益曲线负责，不再通过 A/B 或摇杆按键切模式。
         velocityTeleop.enableFineControlButton = false;
         velocityTeleop.applyFineControlToRelativePreview = false;
         velocityTeleop.fineLinearSpeedMultiplier = 1.00f;
         velocityTeleop.fineAngularSpeedMultiplier = 1.00f;
-        velocityTeleop.enableAPrecisionModifier = true;
+        velocityTeleop.enableAPrecisionModifier = false;
         velocityTeleop.precisionModifierPositionScale = 0.30f;
 
         velocityTeleop.snapToZeroOnRelease = true;
-        velocityTeleop.snapGraspApproachToVertical = true;
+        velocityTeleop.snapGraspApproachToVertical = false;
         velocityTeleop.verticalApproachSnapDegrees = 32.0f;
         velocityTeleop.enableLeftPrimarySnapDown = true;
         velocityTeleop.enableLeftPrimaryReadyPose = true;
         velocityTeleop.leftPrimaryReadyPoseHoldSeconds = 0.45f;
-        velocityTeleop.enableLeftSecondaryOrientationHold = true;
+        velocityTeleop.enableLeftSecondaryOrientationHold = false;
         velocityTeleop.linearSpeedGain = 1.20f;
         velocityTeleop.maxLinearSpeed = 0.26f;
         velocityTeleop.maxLinearAcceleration = 1.20f;

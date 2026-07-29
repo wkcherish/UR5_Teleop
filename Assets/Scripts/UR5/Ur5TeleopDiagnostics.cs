@@ -53,11 +53,26 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
         float filteredToConstrained = teleop != null
             ? Vector3.Distance(teleop.FilteredCommandPosition, teleop.ConstrainedCommandPosition)
             : 0.0f;
+        float rotationFilterGapDegrees = teleop != null
+            ? Quaternion.Angle(teleop.LogicalCommandRotation, teleop.FilteredCommandRotation)
+            : 0.0f;
+        bool isContinuous6Dof = teleop != null && teleop.EnableContinuous6DofClutch;
+        string controlLabel = isContinuous6Dof ? "continuous6dof" : "legacy";
+        // 单模式下保留 mode 字段但标成 legacy-free，避免后续日志分析误判为仍在做 free/fine/insert 切换。
+        string modeLabel = teleop != null
+            ? (isContinuous6Dof ? "legacy-free" : teleop.ActiveTeleopMode.ToString())
+            : "n/a";
 
         Debug.Log(
             "UR5 teleop diag "
             + "fixedDt=" + Time.fixedDeltaTime.ToString("F4")
             + " approxHz=" + (1.0f / Mathf.Max(0.0001f, Time.fixedDeltaTime)).ToString("F1")
+            + " control=" + controlLabel
+            + " fault=" + (teleop != null ? teleop.Continuous6DofFaultReason.ToString() : "n/a")
+            + " handDistanceM=" + (teleop != null ? teleop.ContinuousControllerDistanceMeters.ToString("F4") : "n/a")
+            + " handAngleDeg=" + (teleop != null ? teleop.ContinuousControllerAngleDegrees.ToString("F2") : "n/a")
+            + " translationGain=" + (teleop != null ? teleop.ContinuousTranslationGain.ToString("F3") : "n/a")
+            + " rotationGain=" + (teleop != null ? teleop.ContinuousRotationGain.ToString("F3") : "n/a")
             + " devices=" + (right.isValid ? "R1" : "R0") + (left.isValid ? "L1" : "L0")
             + " grip=" + rightGrip.ToString("F2") + "/" + leftGrip.ToString("F2")
             + " A=" + (a ? "1" : "0") + " X=" + (x ? "1" : "0")
@@ -67,7 +82,7 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " handDelta=" + (teleop != null ? teleop.ControllerPositionInputDifferenceMeters.ToString("F4") : "n/a")
             + " gate=" + (teleop != null && teleop.IsControllerPositionNoiseGateHolding ? "hold" : "pass")
             + " strategy=" + (teleop != null && teleop.IsAnchoredPoseStrategyActive ? "anchored" : "idle")
-            + " mode=" + (teleop != null ? teleop.ActiveTeleopMode.ToString() : "n/a")
+            + " mode=" + modeLabel
             + " state=" + (teleop != null ? teleop.TeleopControllerState.ToString() : "n/a")
             + " smoothStep=" + (teleop != null ? teleop.ActiveAnchoredPoseSmoothingStep.ToString("F2") : "n/a")
             + " logical=" + (teleop != null ? teleop.LogicalCommandPosition.ToString("F4") : "n/a")
@@ -76,6 +91,7 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " actual=" + (follower != null ? follower.ControlPointPosition.ToString("F4") : "n/a")
             + " err=" + (follower != null ? follower.PositionError.ToString("F4") + "m/" + follower.RotationErrorDegrees.ToString("F2") + "deg" : "n/a")
             + " filterGap=" + commandToFiltered.ToString("F4") + "m"
+            + " rotationFilterGapDeg=" + rotationFilterGapDegrees.ToString("F2")
             + " constrainGap=" + filteredToConstrained.ToString("F4") + "m"
             + " limit=" + (teleop != null && teleop.IsPreviewLeadLimited ? "lead" : "none")
             + " queue=" + (trajectoryPlayer != null ? trajectoryPlayer.PendingWaypointCount.ToString() : "n/a")

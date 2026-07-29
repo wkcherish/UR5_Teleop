@@ -26,7 +26,7 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
     {
         csv = new StringBuilder();
         ResolveControlReferences();
-        csv.AppendLine("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,grasp_assist_active,velocity_active,position_clutched,rotation_clutched,fine_control_active,rotation_input_mode,rotation_joystick_valid,rotation_joystick_x,rotation_joystick_y,joystick_roll_modifier,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,raw_base_wx_radps,raw_base_wy_radps,raw_base_wz_radps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps");
+        csv.AppendLine("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,grasp_assist_active,velocity_active,position_clutched,rotation_clutched,fine_control_active,rotation_input_mode,rotation_joystick_valid,rotation_joystick_x,rotation_joystick_y,joystick_roll_modifier,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,raw_base_wx_radps,raw_base_wy_radps,raw_base_wz_radps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps,continuous_6dof_enabled,continuous_state,continuous_fault,controller_distance_m,controller_angle_deg,translation_gain,rotation_gain,logical_to_filtered_rotation_deg");
         outputPath = Path.Combine(Application.persistentDataPath, "ur5_pose_log.csv");
 
         if (recordOnStart)
@@ -101,6 +101,16 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         bool motionArmed = speedlClient != null && speedlClient.IsMotionArmed;
         Vector3 sentLinearVelocity = speedlClient != null ? speedlClient.LastSentLinearVelocity : Vector3.zero;
         Vector3 sentAngularVelocity = speedlClient != null ? speedlClient.LastSentAngularVelocity : Vector3.zero;
+        bool continuous6DofEnabled = velocityTeleop != null && velocityTeleop.EnableContinuous6DofClutch;
+        string continuousState = velocityTeleop != null ? velocityTeleop.TeleopControllerState.ToString() : string.Empty;
+        string continuousFault = velocityTeleop != null ? velocityTeleop.Continuous6DofFaultReason.ToString() : string.Empty;
+        float continuousDistanceMeters = velocityTeleop != null ? velocityTeleop.ContinuousControllerDistanceMeters : 0.0f;
+        float continuousAngleDegrees = velocityTeleop != null ? velocityTeleop.ContinuousControllerAngleDegrees : 0.0f;
+        float continuousTranslationGain = velocityTeleop != null ? velocityTeleop.ContinuousTranslationGain : 0.0f;
+        float continuousRotationGain = velocityTeleop != null ? velocityTeleop.ContinuousRotationGain : 0.0f;
+        float logicalToFilteredRotationDegrees = velocityTeleop != null
+            ? Quaternion.Angle(velocityTeleop.LogicalCommandRotation, velocityTeleop.FilteredCommandRotation)
+            : 0.0f;
 
         if (velocityTeleop != null)
         {
@@ -165,6 +175,15 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         csv.Append(',').Append(Format(sentAngularVelocity.x));
         csv.Append(',').Append(Format(sentAngularVelocity.y));
         csv.Append(',').Append(Format(sentAngularVelocity.z));
+        // 新增列只能追加在末尾，避免旧日志分析脚本按前缀 schema 读取时发生错位。
+        csv.Append(',').Append(continuous6DofEnabled ? "1" : "0");
+        csv.Append(',').Append(continuousState);
+        csv.Append(',').Append(continuousFault);
+        csv.Append(',').Append(Format(continuousDistanceMeters));
+        csv.Append(',').Append(Format(continuousAngleDegrees));
+        csv.Append(',').Append(Format(continuousTranslationGain));
+        csv.Append(',').Append(Format(continuousRotationGain));
+        csv.Append(',').Append(Format(logicalToFilteredRotationDegrees));
 
         csv.AppendLine();
     }
