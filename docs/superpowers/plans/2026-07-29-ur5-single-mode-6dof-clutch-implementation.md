@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Unity 工程根目录固定为 `/Users/imi-1/Desktop/project/ur5`。
+- 所有实现和提交直接在当前分支 `fix/teleop-pose-math-testbench` 完成，不为 9.3 创建新功能分支。
 - 设计依据固定为 `docs/superpowers/specs/2026-07-29-ur5-single-mode-6dof-clutch-design.md`，设计提交为 `c76e107`。
 - 标准交互只有右手 Grip + 右手柄完整位置/四元数；A/B、左摇杆、左手 Y 不切换或生成标准运动。
 - 小动作与大动作使用同一条连续 SmoothStep 响应曲线，不得新增运动模式。
@@ -25,7 +26,7 @@
   `Packages/com.unity.robotics.urdf-importer/Runtime/UnityMeshImporter/Plugins/AssimpNet/Native/win/x86_64.meta`。
 - 关键四元数顺序、安全锁存和输入所有权必须添加必要中文注释；明显代码不添加复述式注释。
 - 每个实现任务采用测试驱动：先写失败测试、确认失败、最小实现、确认通过、审查差异、独立提交。
-- 命令行 Tuanjie 测试只能在 `using-git-worktrees` 创建的隔离工作树中执行；不得在当前 GUI 工程目录直接运行 batchmode，以免改写 `Library/LastSceneManagerSetup.txt`。
+- 优先在当前工程使用 Tuanjie Test Runner 执行 EditMode 测试。计划中的命令行测试是可复现等价命令；不得在当前 GUI 工程目录直接运行 batchmode，以免改写 `Library/LastSceneManagerSetup.txt`。必须使用命令行时，使用不创建 Git 分支的安全临时工程副本。
 - 到达 Quest 3 Build & Run 节点时必须先向用户汇报并等待确认，不得自行执行。
 
 ---
@@ -152,7 +153,7 @@ public class Ur5Continuous6DofClutchControllerTests
 
 - [ ] **Step 2: 运行目标测试并确认因类型不存在而失败**
 
-在隔离工作树中运行：
+在安全临时工程副本中运行以下等价命令；若当前工程使用 GUI Test Runner，则选择同名测试类并核对相同通过/失败结果：
 
 ```bash
 TUANJIE_EDITOR="/Applications/Tuanjie/Hub/Editor/2022.3.62t11/Tuanjie.app/Contents/MacOS/Tuanjie"
