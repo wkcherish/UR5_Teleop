@@ -74,6 +74,67 @@ public class Ur5RelativePoseClutchMapperTests
     }
 
     [Test]
+    public void TimeConstantFilter_IsConsistentAt72_90And120Hz()
+    {
+        (Vector3 position, Quaternion rotation) at72 = SimulateTimeConstantFilter(72.0f);
+        (Vector3 position, Quaternion rotation) at90 = SimulateTimeConstantFilter(90.0f);
+        (Vector3 position, Quaternion rotation) at120 = SimulateTimeConstantFilter(120.0f);
+
+        Assert.LessOrEqual(Vector3.Distance(at72.position, at90.position), 0.0005f);
+        Assert.LessOrEqual(Vector3.Distance(at72.position, at120.position), 0.0005f);
+        Assert.LessOrEqual(Quaternion.Angle(at72.rotation, at90.rotation), 0.1f);
+        Assert.LessOrEqual(Quaternion.Angle(at72.rotation, at120.rotation), 0.1f);
+    }
+
+    [Test]
+    public void TimeConstantFilter_EnforcesLinearSpeedLimit()
+    {
+        var filter = new Ur5RelativePoseCommandFilter();
+        filter.Reset(Vector3.zero, Quaternion.identity);
+
+        Assert.IsTrue(filter.FilterByTimeConstants(
+            Vector3.right, Quaternion.identity,
+            0.055f, 0.055f, 0.01f,
+            0.26f, 4.0f * Mathf.Rad2Deg,
+            out Vector3 position, out _));
+
+        Assert.LessOrEqual(position.magnitude, 0.26f * 0.01f + 0.000001f);
+    }
+
+    [Test]
+    public void TimeConstantFilter_EnforcesAngularSpeedLimit()
+    {
+        var filter = new Ur5RelativePoseCommandFilter();
+        filter.Reset(Vector3.zero, Quaternion.identity);
+
+        Assert.IsTrue(filter.FilterByTimeConstants(
+            Vector3.zero, Quaternion.AngleAxis(90.0f, Vector3.up),
+            0.055f, 0.055f, 0.01f,
+            0.26f, 100.0f,
+            out _, out Quaternion rotation));
+
+        Assert.LessOrEqual(Quaternion.Angle(Quaternion.identity, rotation), 1.0001f);
+    }
+
+    [Test]
+    public void TimeConstantFilter_RejectsInvalidInputAndPreservesLastOutput()
+    {
+        var filter = new Ur5RelativePoseCommandFilter();
+        filter.Reset(new Vector3(0.1f, 0.2f, 0.3f), Quaternion.Euler(1.0f, 2.0f, 3.0f));
+
+        Assert.IsFalse(filter.FilterByTimeConstants(
+            new Vector3(float.NaN, 0.0f, 0.0f), Quaternion.identity,
+            0.055f, 0.055f, 0.01f,
+            0.26f, 100.0f,
+            out Vector3 invalidPosition, out Quaternion invalidRotation));
+
+        AssertVectorNear(new Vector3(0.1f, 0.2f, 0.3f), invalidPosition, 0.000001f);
+        Assert.LessOrEqual(
+            Quaternion.Angle(Quaternion.Euler(1.0f, 2.0f, 3.0f), invalidRotation),
+            0.0001f);
+    }
+
+    [Test]
     public void PositionNoiseGate_HoldsIdleJitterWithoutTimeBasedLag()
     {
         var gate = new Ur5PositionNoiseGate();
@@ -196,6 +257,31 @@ public class Ur5RelativePoseClutchMapperTests
         }
 
         return position;
+    }
+
+    private static (Vector3 position, Quaternion rotation) SimulateTimeConstantFilter(float updateRateHz)
+    {
+        var filter = new Ur5RelativePoseCommandFilter();
+        filter.Reset(Vector3.zero, Quaternion.identity);
+        float deltaTime = 1.0f / updateRateHz;
+        int steps = Mathf.RoundToInt(updateRateHz * 0.5f);
+        Vector3 position = Vector3.zero;
+        Quaternion rotation = Quaternion.identity;
+        for (int index = 0; index < steps; index++)
+        {
+            filter.FilterByTimeConstants(
+                Vector3.one * 0.1f,
+                Quaternion.Euler(20.0f, 30.0f, 40.0f),
+                0.055f,
+                0.055f,
+                deltaTime,
+                10.0f,
+                720.0f,
+                out position,
+                out rotation);
+        }
+
+        return (position, rotation);
     }
 
     private static void AssertVectorNear(Vector3 expected, Vector3 actual, float tolerance)
