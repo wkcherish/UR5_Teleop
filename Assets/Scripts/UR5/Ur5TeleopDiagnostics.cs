@@ -78,6 +78,7 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " A=" + (a ? "1" : "0") + " X=" + (x ? "1" : "0")
             + " trigger=" + trigger.ToString("F2") + " stick=" + stick.ToString("F2")
             + " rawHand=" + (teleop != null ? teleop.RawControllerPositionWorld.ToString("F4") : "n/a")
+            + " rawHandRotation=" + (teleop != null ? teleop.RawControllerRotationWorld.ToString("F4") : "n/a")
             + " stableHand=" + (teleop != null ? teleop.StabilizedControllerPositionWorld.ToString("F4") : "n/a")
             + " handDelta=" + (teleop != null ? teleop.ControllerPositionInputDifferenceMeters.ToString("F4") : "n/a")
             + " gate=" + (teleop != null && teleop.IsControllerPositionNoiseGateHolding ? "hold" : "pass")
@@ -99,6 +100,9 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " driveLead=" + maximumDriveLead.ToString("F2")
             + " ikLeadGate=" + (follower != null && follower.WasIkCommandLeadLimited ? "on" : "off")
             + " pivot=" + (follower != null ? follower.LastDlsMinimumPivot.ToString("F5") : "n/a")
+            + " stationarySeconds=" + (follower != null ? follower.TargetStationarySeconds.ToString("F3") : "n/a")
+            + " settledHold=" + (follower != null && follower.IsSettledTargetHoldActive ? "on" : "off")
+            + " nearSingularity=" + (follower != null && follower.IsNearSingularity ? "on" : "off")
             + " ikFail=" + (follower != null ? follower.IkFailureCount.ToString() : "n/a")
             + " owner=" + (targetWriteMonitor != null ? targetWriteMonitor.LastWriter : "n/a")
             + " conflicts=" + (targetWriteMonitor != null ? targetWriteMonitor.WriteConflictCount.ToString() : "n/a"));

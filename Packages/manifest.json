@@ -9,6 +9,7 @@
     "com.unity.robotics.urdf-importer": "file:com.unity.robotics.urdf-importer",
     "com.unity.textmeshpro": "3.0.9",
     "com.unity.timeline": "1.7.7",
+    "com.unity.toolchain.macos-arm64-linux-x86_64": "2.1.0",
     "com.unity.ugui": "1.0.0",
     "com.unity.visualscripting": "1.9.4",
     "com.unity.xr.management": "4.4.1",

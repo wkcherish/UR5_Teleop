@@ -4,14 +4,16 @@ using UnityEngine;
 public class Ur5Continuous6DofClutchControllerTests
 {
     [Test]
-    public void ContinuousController_DefaultsToSingleRightHandOwnership()
+    public void DefaultController_PrefersUr10StyleSingleRightHandOwnership()
     {
         GameObject owner = new GameObject("teleop-test");
         try
         {
             var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
 
-            Assert.IsTrue(teleop.enableContinuous6DofClutch);
+            Assert.IsTrue(teleop.enableUr10StyleAnchoredPoseClutch);
+            Assert.IsFalse(teleop.enableContinuous6DofClutch);
+            Assert.IsTrue(teleop.UsesUr10StyleAnchoredPoseClutch);
             Assert.AreEqual(UnityEngine.XR.XRNode.RightHand, teleop.positionControllerNode);
             Assert.AreEqual(UnityEngine.XR.XRNode.RightHand, teleop.rotationControllerNode);
             Assert.IsTrue(teleop.usePositionGripAsDeadman);

@@ -66,6 +66,34 @@ public sealed class Ur5AnchoredPoseTeleopStrategy
         Vector3 inputPosition,
         Quaternion inputRotation,
         Vector3 positionMapping,
+        out Vector3 requestedPosition,
+        out Quaternion requestedRotation)
+    {
+        requestedPosition = targetPosition;
+        requestedRotation = targetRotation;
+        if (!IsTracking
+            || !IsFinite(inputPosition)
+            || !IsValidRotation(inputRotation)
+            || !IsFinite(positionMapping))
+        {
+            return false;
+        }
+
+        Quaternion relativeRotation = Normalize(inputRotation)
+            * Quaternion.Inverse(inputAnchorRotation);
+        return TryGetRequestedPose(
+            inputPosition,
+            inputRotation,
+            positionMapping,
+            relativeRotation * toolAnchorRotation,
+            out requestedPosition,
+            out requestedRotation);
+    }
+
+    public bool TryGetRequestedPose(
+        Vector3 inputPosition,
+        Quaternion inputRotation,
+        Vector3 positionMapping,
         Quaternion requestedToolRotation,
         out Vector3 requestedPosition,
         out Quaternion requestedRotation)

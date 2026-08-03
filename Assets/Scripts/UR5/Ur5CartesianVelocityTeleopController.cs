@@ -28,14 +28,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Header("Controllers")]
     public XRNode positionControllerNode = XRNode.RightHand;
     public XRNode rotationControllerNode = XRNode.RightHand;
+    [Tooltip("左手安全姿态使用独立设备，不能与右手 6DoF 旋转节点复用。")]
+    public XRNode safetyControllerNode = XRNode.LeftHand;
     public bool usePositionGripAsDeadman = true;
     public bool useRotationGripAsDeadman = true;
     [Tooltip("Locked is the pick-and-place default: translation is tracked while the TCP attitude is held. Joystick and controller-pose modes are optional Inspector-only modes for special tasks.")]
     public RotationInputMode rotationInputMode = RotationInputMode.Locked;
 
-    [Header("单模式 6DoF 离合")]
-    [Tooltip("标准 Quest 控制：右手 Grip 同时控制 TCP 平移与完整三轴旋转。")]
-    public bool enableContinuous6DofClutch = true;
+    [Header("UR10 风格单模式 6DoF 离合")]
+    [Tooltip("标准 Quest 控制：右手 Grip 的上升沿锚定原始手柄 Pose 和实际 TCP；保持期间仅执行相对 Pose 映射。")]
+    public bool enableUr10StyleAnchoredPoseClutch = true;
+    [Tooltip("兼容旧实验性连续速度控制。标准 Quest Profile 必须关闭。")]
+    public bool enableContinuous6DofClutch;
     public Ur5Continuous6DofConfig continuous6DofConfig = Ur5Continuous6DofConfig.Default;
 
     [Header("Right Controller Position Stabilization")]
@@ -169,6 +173,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Tooltip("Holding X for this duration starts the full gripper-down ready pose. Releasing X before arrival safely holds the current joint pose.")]
     public bool enableLeftPrimaryReadyPose = true;
     public float leftPrimaryReadyPoseHoldSeconds = 0.45f;
+    [Tooltip("短按 X 朝下动作的最长执行时间，单位秒；超时后立即保持当前姿态。")]
+    public float leftPrimarySnapTimeoutSeconds = 3.0f;
+    [Tooltip("短按 X 朝下动作完成时允许的 TCP 位置误差，单位米。")]
+    public float leftPrimarySnapPositionToleranceMeters = 0.003f;
+    [Tooltip("短按 X 朝下动作完成时允许的抓取姿态误差，单位度。")]
+    public float leftPrimarySnapRotationToleranceDegrees = 0.50f;
     [Tooltip("Hold Y on the left controller to freeze the current TCP orientation while the right hand translates.")]
     public bool enableLeftSecondaryOrientationHold = true;
 
@@ -216,10 +226,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private InputDevice positionDevice;
     private InputDevice rotationDevice;
+    private InputDevice safetyDevice;
     private bool hasLoggedMissingPositionDevice;
     private bool hasLoggedMissingRotationDevice;
+    private bool hasLoggedMissingSafetyDevice;
     private bool positionGripLatched;
     private bool rotationGripLatched;
+    private bool safetyGripLatched;
     private bool wasPositionClutched;
     private bool wasRotationClutched;
     private bool wasFinePositionControlActive;
@@ -241,6 +254,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 filteredControllerPositionWorld;
     private readonly Ur5OneEuroVectorFilter controllerPositionOneEuroFilter = new Ur5OneEuroVectorFilter();
     private readonly Ur5PositionNoiseGate controllerPositionNoiseGate = new Ur5PositionNoiseGate();
+    private readonly Ur5RotationNoiseGate ur10StyleRotationNoiseGate = new Ur5RotationNoiseGate();
     private readonly Ur5RelativePoseCommandFilter relativePoseCommandFilter = new Ur5RelativePoseCommandFilter();
     private readonly Ur5RelativePoseClutchMapper relativePoseClutchMapper = new Ur5RelativePoseClutchMapper();
     private readonly Ur5AnchoredPoseTeleopStrategy anchoredPoseTeleop = new Ur5AnchoredPoseTeleopStrategy();
@@ -272,13 +286,20 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool hasStabilizedPreviewPosition;
     private Vector3 stabilizedPreviewPosition;
     private Vector3 positionMotionReferenceWorld;
+    private Quaternion positionMotionReferenceRotation = Quaternion.identity;
     private bool hasPositionMotionReference;
+    private Vector3 ur10StyleCommandPositionWorld;
+    private Quaternion ur10StyleCommandRotationWorld = Quaternion.identity;
+    private bool hasUr10StyleCommandPose;
     private float positionHandStillSeconds;
     private bool positionHandStopHoldActive;
     private Ur5TcpTargetFollower tcpFollower;
-    private bool leftPrimaryWasPressed;
-    private float leftPrimaryHeldSeconds;
-    private bool leftPrimaryReadyPoseWasRequested;
+    private Ur5LeftSafetyPoseController leftSafetyPoseController;
+    private float configuredLeftPrimaryReadyPoseHoldSeconds = -1.0f;
+    private float configuredLeftPrimarySnapTimeoutSeconds = -1.0f;
+    private bool hasLeftPrimarySnapTarget;
+    private Vector3 leftPrimarySnapTargetPosition;
+    private Quaternion leftPrimarySnapTargetRotation = Quaternion.identity;
     private bool leftSecondaryWasPressed;
     private bool isSecondaryPoseRotationActive;
     private bool wasSecondaryPoseRotationActive;
@@ -291,6 +312,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     // X 长按的 ready pose 会直接将 TCP 同步到机械臂末端。记录其状态边沿，
     // 以避免旧的“夹爪朝下”目标在右手首次平移时被重新应用而造成预转动。
     private bool readyPoseWasActive;
+    private bool wasUr10StyleGripHeld;
 
     public Vector3 LogicalCommandPosition { get; private set; }
     public Quaternion LogicalCommandRotation { get; private set; } = Quaternion.identity;
@@ -311,6 +333,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         : (IsCommandActive ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle);
     public Ur5TeleopModeConfig ActiveTeleopModeConfig => GetActiveTeleopModeConfig();
     public bool EnableContinuous6DofClutch => enableContinuous6DofClutch;
+    public bool UsesUr10StyleAnchoredPoseClutch => enableUr10StyleAnchoredPoseClutch
+        && !enableContinuous6DofClutch;
     public Ur5Continuous6DofFaultReason Continuous6DofFaultReason =>
         latestContinuous6DofStep.FaultReason;
     public float ContinuousControllerDistanceMeters =>
@@ -324,6 +348,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool IsAnchoredPoseStrategyActive => useAnchoredPoseTeleopStrategy && anchoredPoseTeleop.IsTracking;
     public float ActiveAnchoredPoseSmoothingStep => GetAnchoredPoseSmoothingStep();
     public Vector3 RawControllerPositionWorld => latestRawPositionWorld;
+    public Quaternion RawControllerRotationWorld => latestRotationValid
+        ? latestRotationWorld
+        : Quaternion.identity;
     public Vector3 StabilizedControllerPositionWorld => filteredControllerPositionWorld;
     public float ControllerPositionInputDifferenceMeters => latestRawPositionValid && hasFilteredControllerPosition
         ? Vector3.Distance(latestRawPositionWorld, filteredControllerPositionWorld)
@@ -332,13 +359,20 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         && latestRawPositionValid
         && hasFilteredControllerPosition
         && ControllerPositionInputDifferenceMeters <= controllerPositionJitterDeadbandMeters;
+    public bool IsSafetyPoseCommandActive => leftSafetyPoseController != null
+        && leftSafetyPoseController.BlocksRightGrip;
+    public Ur5LeftSafetyPoseState SafetyPoseState => leftSafetyPoseController != null
+        ? leftSafetyPoseController.State
+        : Ur5LeftSafetyPoseState.Idle;
 
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
     public bool IsRotationClutched { get; private set; }
     // 左手仅握住 Grip、摇杆居中时不应让 IK 继续追赶旧姿态目标；只有摇杆
     // 真正离开死区后才视为旋转命令。右手平移始终保持实时控制。
-    public bool IsCommandActive => IsPositionClutched || IsRotationCommandActive;
+    public bool IsCommandActive => IsPositionClutched
+        || IsRotationCommandActive
+        || IsSafetyPoseCommandActive;
     public bool IsFineControlActive { get; private set; }
     /// <summary>右手 Grip + 右摇杆按下时的无跳变精细平移模式。</summary>
     public bool IsFinePositionControlActive { get; private set; }
@@ -367,6 +401,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private void Awake()
     {
+        EnsureLeftSafetyPoseController();
         ResolveReferences();
     }
 
@@ -374,6 +409,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     {
         TryRefreshPositionDevice();
         TryRefreshRotationDevice();
+        TryRefreshSafetyDevice();
     }
 
     private void Update()
@@ -446,13 +482,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && useSecondaryButtonForJoystickRoll
             && ReadSecondaryButton(rotationDevice);
 
+        if (UsesUr10StyleAnchoredPoseClutch)
+        {
+            UpdateUr10StyleAnchoredPoseInput(
+                hasPosition,
+                positionWorld,
+                hasRotation,
+                rotationWorld);
+            wasPositionClutched = IsPositionClutched;
+            wasRotationClutched = IsRotationClutched;
+            wasSecondaryPoseRotationActive = false;
+            previousPositionTeleopMode = Ur5TeleopMode.Free;
+            return;
+        }
+
         bool continuousPoseValid = hasPosition && hasRotation;
-        bool continuousGripHeld = enableContinuous6DofClutch
+        bool continuousRightGripHeld = enableContinuous6DofClutch
             && continuousPoseValid
             && (!usePositionGripAsDeadman
                 || ReadGripDeadman(positionDevice, ref positionGripLatched));
 
-        UpdateLeftControllerSafetyPose(blockPrimaryPose: continuousGripHeld);
+        UpdateLeftControllerSafetyPose(continuousRightGripHeld);
+        bool continuousGripHeld = continuousRightGripHeld && !IsSafetyPoseCommandActive;
         SynchronizeOrientationAfterReadyPose();
 
         if (enableContinuous6DofClutch)
@@ -497,7 +548,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         if (IsRotationClutched
             && !wasRotationClutched
             && !IsSafetyOrientationHoldActive
-            && !leftPrimaryWasPressed)
+            && !IsSafetyPoseCommandActive)
         {
             hasPersistentOrientationTarget = false;
         }
@@ -567,8 +618,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         relativePoseCommandFilter.Clear();
         relativePoseClutchMapper.End();
         anchoredPoseTeleop.Pause();
+        ResetUr10StyleCommandPoseGate();
+        wasUr10StyleGripHeld = false;
         clutchModeController.Pause();
         continuous6DofController.Pause();
+        leftSafetyPoseController?.Reset();
+        hasLeftPrimarySnapTarget = false;
         latestContinuous6DofStep = CreateContinuousInactiveStep(
             Ur5TeleopControllerState.Paused,
             Ur5Continuous6DofFaultReason.None);
@@ -589,6 +644,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         if (!rotationDevice.isValid)
         {
             TryRefreshRotationDevice();
+        }
+
+        if (!safetyDevice.isValid)
+        {
+            TryRefreshSafetyDevice();
         }
     }
 
@@ -653,7 +713,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         bool gripHeld)
     {
         bool poseValid = hasPosition && hasRotation;
-        bool safetyPoseOwnsTarget = leftPrimaryWasPressed
+        bool safetyPoseOwnsTarget = IsSafetyPoseCommandActive
             || (tcpFollower != null && tcpFollower.IsReadyPoseActive);
 
         if (safetyPoseOwnsTarget)
@@ -706,6 +766,183 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         limitedBaseAngularVelocity = Vector3.zero;
         filteredBaseLinearVelocity = Vector3.zero;
         filteredBaseAngularVelocity = Vector3.zero;
+    }
+
+    private void UpdateUr10StyleAnchoredPoseInput(
+        bool hasPosition,
+        Vector3 rawPositionWorld,
+        bool hasRotation,
+        Quaternion rawRotationWorld)
+    {
+        bool gripHeld = !usePositionGripAsDeadman
+            || ReadGripDeadman(positionDevice, ref positionGripLatched);
+        bool poseValid = hasPosition && hasRotation;
+
+        // Grip is the only state transition in the reference controller. A
+        // temporary tracking dropout suppresses writes but does not silently
+        // replace the immutable anchors while the user is still holding Grip.
+        if (!gripHeld)
+        {
+            anchoredPoseTeleop.Pause();
+            ResetUr10StyleHandStopHold();
+            ResetUr10StyleCommandPoseGate();
+        }
+        else if (poseValid)
+        {
+            UpdateUr10StyleCommandPose(rawPositionWorld, rawRotationWorld, !wasUr10StyleGripHeld);
+            if (!wasUr10StyleGripHeld && tcpPreviewTarget != null)
+            {
+                anchoredPoseTeleop.Resume(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld,
+                    GetActualToolPosition(),
+                    GetActualToolRotation());
+                ResetUr10StyleHandStopHold(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+            }
+        }
+
+        IsPositionClutched = gripHeld && poseValid && anchoredPoseTeleop.IsTracking;
+        IsRotationClutched = IsPositionClutched;
+        IsInputPoseValid = poseValid;
+        IsFineControlActive = false;
+        IsFinePositionControlActive = false;
+        IsInsertModeActive = false;
+        IsPrecisionModifierHeld = false;
+        isSecondaryPoseRotationActive = false;
+        requestedTeleopMode = Ur5TeleopMode.Free;
+        wasUr10StyleGripHeld = gripHeld;
+
+        if (IsPositionClutched)
+        {
+            UpdateUr10StyleHandStopHold(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                Time.deltaTime);
+        }
+
+        continuous6DofController.Pause();
+        latestContinuous6DofStep = CreateContinuousInactiveStep(
+            IsPositionClutched ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle,
+            Ur5Continuous6DofFaultReason.None);
+        rawBaseLinearVelocity = Vector3.zero;
+        rawBaseAngularVelocity = Vector3.zero;
+        limitedBaseLinearVelocity = Vector3.zero;
+        limitedBaseAngularVelocity = Vector3.zero;
+        filteredBaseLinearVelocity = Vector3.zero;
+        filteredBaseAngularVelocity = Vector3.zero;
+    }
+
+    private void UpdateUr10StyleHandStopHold(
+        Vector3 rawPositionWorld,
+        Quaternion rawRotationWorld,
+        float deltaTime)
+    {
+        if (!freezeRobotWhenPositionHandStops)
+        {
+            ResetUr10StyleHandStopHold(rawPositionWorld, rawRotationWorld);
+            return;
+        }
+
+        if (!hasPositionMotionReference)
+        {
+            ResetUr10StyleHandStopHold(rawPositionWorld, rawRotationWorld);
+            return;
+        }
+
+        float positionDelta = Vector3.Distance(positionMotionReferenceWorld, rawPositionWorld);
+        float rotationDelta = Quaternion.Angle(positionMotionReferenceRotation, rawRotationWorld);
+        float positionEpsilon = Mathf.Max(0.0f, controllerMotionEpsilonMeters);
+        const float rotationEpsilonDegrees = 1.25f;
+        if (positionDelta >= positionEpsilon || rotationDelta >= rotationEpsilonDegrees)
+        {
+            if (positionHandStopHoldActive)
+            {
+                FreezeUr10StyleAtCurrentPose(rawPositionWorld, rawRotationWorld);
+            }
+
+            ResetUr10StyleHandStopHold(rawPositionWorld, rawRotationWorld);
+            return;
+        }
+
+        positionHandStillSeconds += Mathf.Max(0.0f, deltaTime);
+        if (positionHandStopHoldActive
+            || positionHandStillSeconds < Mathf.Max(0.0f, controllerStopHoldSeconds))
+        {
+            return;
+        }
+
+        FreezeUr10StyleAtCurrentPose(rawPositionWorld, rawRotationWorld);
+        positionHandStopHoldActive = true;
+    }
+
+    private void ResetUr10StyleHandStopHold()
+    {
+        hasPositionMotionReference = false;
+        positionHandStillSeconds = 0.0f;
+        positionHandStopHoldActive = false;
+    }
+
+    private void ResetUr10StyleHandStopHold(Vector3 rawPositionWorld, Quaternion rawRotationWorld)
+    {
+        positionMotionReferenceWorld = rawPositionWorld;
+        positionMotionReferenceRotation = rawRotationWorld;
+        hasPositionMotionReference = true;
+        positionHandStillSeconds = 0.0f;
+        positionHandStopHoldActive = false;
+    }
+
+    private void FreezeUr10StyleAtCurrentPose(Vector3 rawPositionWorld, Quaternion rawRotationWorld)
+    {
+        if (tcpPreviewTarget == null)
+        {
+            return;
+        }
+
+        tcpFollower?.FreezeAtCurrentPose();
+        Vector3 holdPosition = GetActualToolPosition();
+        Quaternion holdRotation = GetActualToolRotation();
+        tcpPreviewTarget.SetPositionAndRotation(holdPosition, holdRotation);
+        anchoredPoseTeleop.Rebase(
+            rawPositionWorld,
+            rawRotationWorld,
+            holdPosition,
+            holdRotation);
+        relativePoseCommandFilter.Reset(holdPosition, holdRotation);
+        LogicalCommandPosition = holdPosition;
+        LogicalCommandRotation = holdRotation;
+        ConstrainedCommandPosition = holdPosition;
+        FilteredCommandPosition = holdPosition;
+        FilteredCommandRotation = holdRotation;
+        IsPreviewLeadLimited = false;
+        previewLinearVelocity = Vector3.zero;
+        previewAngularVelocityDegrees = Vector3.zero;
+    }
+
+    private void UpdateUr10StyleCommandPose(
+        Vector3 positionWorld,
+        Quaternion rotationWorld,
+        bool resetRotationGate)
+    {
+        ur10StyleCommandPositionWorld = filterControllerPosition && hasFilteredControllerPosition
+            ? filteredControllerPositionWorld
+            : positionWorld;
+        if (resetRotationGate || !ur10StyleRotationNoiseGate.IsInitialized)
+        {
+            ur10StyleRotationNoiseGate.Reset(rotationWorld);
+        }
+
+        ur10StyleCommandRotationWorld = ur10StyleRotationNoiseGate.Filter(
+            rotationWorld,
+            angularDeadbandDegrees);
+        hasUr10StyleCommandPose = true;
+    }
+
+    private void ResetUr10StyleCommandPoseGate()
+    {
+        hasUr10StyleCommandPose = false;
+        ur10StyleRotationNoiseGate.Clear();
     }
 
     private bool IsRobotOutputReady()
@@ -1036,6 +1273,17 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
+        if (UsesUr10StyleAnchoredPoseClutch)
+        {
+            ApplyUr10StyleAnchoredPosePreview();
+            return;
+        }
+
+        if (ApplyLeftPrimarySnapDownPreview())
+        {
+            return;
+        }
+
         if (enableContinuous6DofClutch)
         {
             ApplyContinuous6DofPreview(deltaTime);
@@ -1049,6 +1297,74 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         ApplyVelocityIntegrationPreview(deltaTime);
+    }
+
+    private void ApplyUr10StyleAnchoredPosePreview()
+    {
+        if (!IsPositionClutched
+            || !IsRotationClutched
+            || !latestPositionValid
+            || !latestRotationValid
+            || !hasUr10StyleCommandPose
+            || !anchoredPoseTeleop.IsTracking)
+        {
+            // Release preserves the last target. The strategy is intentionally
+            // not re-anchored or written here.
+            LogicalCommandPosition = tcpPreviewTarget.position;
+            LogicalCommandRotation = tcpPreviewTarget.rotation;
+            FilteredCommandPosition = tcpPreviewTarget.position;
+            FilteredCommandRotation = tcpPreviewTarget.rotation;
+            ConstrainedCommandPosition = tcpPreviewTarget.position;
+            IsPreviewLeadLimited = false;
+            return;
+        }
+
+        if (!anchoredPoseTeleop.TryGetRequestedPose(
+            ur10StyleCommandPositionWorld,
+            ur10StyleCommandRotationWorld,
+            GetUr10StylePositionMapping(),
+            out Vector3 requestedPosition,
+            out Quaternion requestedRotation))
+        {
+            anchoredPoseTeleop.Pause();
+            return;
+        }
+
+        LogicalCommandPosition = requestedPosition;
+        LogicalCommandRotation = requestedRotation;
+        if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
+        {
+            requestedPosition = workspaceLimiter.ClampWorldPosition(requestedPosition);
+        }
+
+        requestedPosition = LimitPreviewLeadToActualTcp(requestedPosition);
+
+        ConstrainedCommandPosition = requestedPosition;
+        if (!anchoredPoseTeleop.FilterRequestedPose(
+            requestedPosition,
+            requestedRotation,
+            GetAnchoredPoseSmoothingStep(),
+            out Vector3 filteredPosition,
+            out Quaternion filteredRotation))
+        {
+            anchoredPoseTeleop.Pause();
+            return;
+        }
+
+        FilteredCommandPosition = filteredPosition;
+        FilteredCommandRotation = filteredRotation;
+        tcpPreviewTarget.SetPositionAndRotation(filteredPosition, filteredRotation);
+        targetWriteMonitor?.RecordWrite("QuestTeleopUr10StyleAnchoredPose");
+    }
+
+    private Vector3 GetUr10StylePositionMapping()
+    {
+        if (enableThreeModeController && IsPositionClutched)
+        {
+            return Vector3.one * GetActiveTeleopModeConfig().TranslationGain;
+        }
+
+        return Vector3.one * Mathf.Max(0.0f, normalPositionScale);
     }
 
     private void ApplyVelocityIntegrationPreview(float deltaTime)
@@ -1331,69 +1647,72 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return Quaternion.LookRotation(snappedApproach, jawUp.normalized);
     }
 
-    private void UpdateLeftControllerSafetyPose(bool blockPrimaryPose)
+    private void UpdateLeftControllerSafetyPose(bool rightGripHeld)
     {
-        if (rotationControllerNode != XRNode.LeftHand
-            || !rotationDevice.isValid
-            || tcpPreviewTarget == null)
-        {
-            if (tcpFollower != null && tcpFollower.IsReadyPoseActive)
-            {
-                tcpFollower.CancelReadyPose();
-            }
+        EnsureLeftSafetyPoseController();
+        bool safetyPoseValid = safetyDevice.isValid && tcpPreviewTarget != null;
+        bool leftGripHeld = safetyPoseValid
+            && ReadGripDeadman(safetyDevice, ref safetyGripLatched);
+        bool primaryPressed = leftGripHeld
+            && enableLeftPrimarySnapDown
+            && safetyDevice.TryGetFeatureValue(
+                CommonUsages.primaryButton,
+                out bool primaryValue)
+            && primaryValue;
+        bool snapTargetReached = leftSafetyPoseController.State
+                == Ur5LeftSafetyPoseState.SnapDownActive
+            && tcpFollower != null
+            && IsSafetySnapTargetReached(
+                tcpFollower.PositionError,
+                tcpFollower.RotationErrorDegrees,
+                leftPrimarySnapPositionToleranceMeters,
+                leftPrimarySnapRotationToleranceDegrees);
 
-            leftPrimaryWasPressed = false;
-            leftPrimaryHeldSeconds = 0.0f;
-            leftPrimaryReadyPoseWasRequested = false;
-            leftSecondaryWasPressed = false;
-            IsSafetyOrientationHoldActive = false;
-            return;
+        Ur5LeftSafetyPoseStepResult safetyStep = leftSafetyPoseController.Step(
+            new Ur5LeftSafetyPoseStepInput(
+                rightGripHeld,
+                safetyPoseValid,
+                leftGripHeld,
+                primaryPressed,
+                snapTargetReached,
+                tcpFollower != null && tcpFollower.IsReadyPoseActive,
+                Time.deltaTime));
+
+        if (safetyStep.RequestSnapDown)
+        {
+            CaptureLeftPrimarySnapDownTarget();
         }
 
-        // X/Y 属于左手安全控制，必须同时满足左手 Grip，不能被偶然按键触发。
-        bool leftGripHeld = !useRotationGripAsDeadman
-            || ReadGripDeadman(rotationDevice, ref rotationGripLatched);
-        bool primaryPressed = !blockPrimaryPose
-            && leftGripHeld
-            && enableLeftPrimarySnapDown
-            && rotationDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryValue)
-            && primaryValue;
+        if (safetyStep.RequestReadyPose && enableLeftPrimaryReadyPose && tcpFollower != null)
+        {
+            hasLeftPrimarySnapTarget = false;
+            tcpFollower.BeginReadyPose();
+        }
+
+        if (safetyStep.CancelReadyPose && tcpFollower != null)
+        {
+            tcpFollower.CancelReadyPose();
+        }
+
+        if (safetyStep.SnapTimedOut)
+        {
+            // 朝下目标不可达时只冻结一次当前测得姿态，不允许 IK 继续追赶旧目标。
+            hasLeftPrimarySnapTarget = false;
+            tcpFollower?.FreezeAtCurrentPose();
+        }
+        else if (snapTargetReached)
+        {
+            hasLeftPrimarySnapTarget = false;
+        }
+
+        // Y 是兼容的安全姿态保持入口，也必须读取独立左手设备。
         bool secondaryPressed = leftGripHeld
             && enableLeftSecondaryOrientationHold
             && !enableLeftSecondaryPoseRotation
-            && rotationDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryValue)
+            && safetyDevice.TryGetFeatureValue(
+                CommonUsages.secondaryButton,
+                out bool secondaryValue)
             && secondaryValue;
-
-        if (primaryPressed && !leftPrimaryWasPressed)
-        {
-            Vector3 yawReference = robotBaseFrame != null ? robotBaseFrame.forward : Vector3.forward;
-            persistentOrientationTarget = tcpFollower != null
-                ? tcpFollower.GetToolRotationForGraspApproach(Vector3.down, yawReference)
-                : tcpPreviewTarget.rotation;
-            hasPersistentOrientationTarget = true;
-        }
-
-        if (primaryPressed)
-        {
-            leftPrimaryHeldSeconds += Time.deltaTime;
-            if (enableLeftPrimaryReadyPose
-                && !leftPrimaryReadyPoseWasRequested
-                && leftPrimaryHeldSeconds >= Mathf.Max(0.0f, leftPrimaryReadyPoseHoldSeconds))
-            {
-                leftPrimaryReadyPoseWasRequested = tcpFollower != null && tcpFollower.BeginReadyPose();
-            }
-        }
-        else
-        {
-            if (leftPrimaryWasPressed && tcpFollower != null && tcpFollower.IsReadyPoseActive)
-            {
-                tcpFollower.CancelReadyPose();
-            }
-
-            leftPrimaryHeldSeconds = 0.0f;
-            leftPrimaryReadyPoseWasRequested = false;
-        }
-
         if (secondaryPressed && !leftSecondaryWasPressed)
         {
             persistentOrientationTarget = tcpPreviewTarget.rotation;
@@ -1402,8 +1721,69 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         IsSafetyOrientationHoldActive = secondaryPressed;
-        leftPrimaryWasPressed = primaryPressed;
         leftSecondaryWasPressed = secondaryPressed;
+    }
+
+    private void CaptureLeftPrimarySnapDownTarget()
+    {
+        if (tcpPreviewTarget == null || tcpFollower == null)
+        {
+            hasLeftPrimarySnapTarget = false;
+            return;
+        }
+
+        Vector3 yawReference = robotBaseFrame != null
+            ? robotBaseFrame.forward
+            : Vector3.forward;
+        leftPrimarySnapTargetPosition = GetActualToolPosition();
+        leftPrimarySnapTargetRotation = tcpFollower.GetToolRotationForGraspApproach(
+            Vector3.down,
+            yawReference);
+        hasLeftPrimarySnapTarget = true;
+    }
+
+    private bool ApplyLeftPrimarySnapDownPreview()
+    {
+        if (SafetyPoseState != Ur5LeftSafetyPoseState.SnapDownActive
+            || !hasLeftPrimarySnapTarget
+            || tcpPreviewTarget == null)
+        {
+            return false;
+        }
+
+        Vector3 targetPosition = leftPrimarySnapTargetPosition;
+        if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
+        {
+            targetPosition = workspaceLimiter.ClampWorldPosition(targetPosition);
+        }
+
+        // 安全朝下路径是本帧唯一写入源；位置保持在短按完成时的实际 TCP，
+        // 姿态由物理抓取帧计算，不能再叠加右手相对四元数。
+        LogicalCommandPosition = leftPrimarySnapTargetPosition;
+        LogicalCommandRotation = leftPrimarySnapTargetRotation;
+        ConstrainedCommandPosition = targetPosition;
+        FilteredCommandPosition = targetPosition;
+        FilteredCommandRotation = leftPrimarySnapTargetRotation;
+        tcpPreviewTarget.SetPositionAndRotation(targetPosition, leftPrimarySnapTargetRotation);
+        targetWriteMonitor?.RecordWrite("LeftSafetySnapDown");
+        return true;
+    }
+
+    public static bool IsSafetySnapTargetReached(
+        float positionErrorMeters,
+        float rotationErrorDegrees,
+        float positionToleranceMeters,
+        float rotationToleranceDegrees)
+    {
+        return IsFinite(positionErrorMeters)
+            && IsFinite(rotationErrorDegrees)
+            && positionErrorMeters <= Mathf.Max(0.0f, positionToleranceMeters)
+            && rotationErrorDegrees <= Mathf.Max(0.0f, rotationToleranceDegrees);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
     private void SynchronizeOrientationAfterReadyPose()
@@ -2158,6 +2538,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         LogDeviceStatus(rotationDevice, "rotation", ref hasLoggedMissingRotationDevice);
     }
 
+    private void TryRefreshSafetyDevice()
+    {
+        safetyDevice = InputDevices.GetDeviceAtXRNode(safetyControllerNode);
+        LogDeviceStatus(safetyDevice, "left safety", ref hasLoggedMissingSafetyDevice);
+    }
+
     private void LogDeviceStatus(InputDevice device, string role, ref bool hasLoggedMissingDevice)
     {
         if (device.isValid)
@@ -2221,6 +2607,23 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
     }
 
+    private void EnsureLeftSafetyPoseController()
+    {
+        float readyHold = Mathf.Max(0.0f, leftPrimaryReadyPoseHoldSeconds);
+        float snapTimeout = Mathf.Max(0.0f, leftPrimarySnapTimeoutSeconds);
+        if (leftSafetyPoseController != null
+            && Mathf.Approximately(configuredLeftPrimaryReadyPoseHoldSeconds, readyHold)
+            && Mathf.Approximately(configuredLeftPrimarySnapTimeoutSeconds, snapTimeout))
+        {
+            return;
+        }
+
+        leftSafetyPoseController = new Ur5LeftSafetyPoseController(readyHold, snapTimeout);
+        configuredLeftPrimaryReadyPoseHoldSeconds = readyHold;
+        configuredLeftPrimarySnapTimeoutSeconds = snapTimeout;
+        hasLeftPrimarySnapTarget = false;
+    }
+
     private void OnValidate()
     {
         linearSpeedGain = Mathf.Max(0.0f, linearSpeedGain);
@@ -2271,6 +2674,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         controllerStopHoldSeconds = Mathf.Max(0.0f, controllerStopHoldSeconds);
         verticalApproachSnapDegrees = Mathf.Clamp(verticalApproachSnapDegrees, 1.0f, 89.0f);
         leftPrimaryReadyPoseHoldSeconds = Mathf.Max(0.0f, leftPrimaryReadyPoseHoldSeconds);
+        leftPrimarySnapTimeoutSeconds = Mathf.Max(0.0f, leftPrimarySnapTimeoutSeconds);
+        leftPrimarySnapPositionToleranceMeters = Mathf.Max(
+            0.0f,
+            leftPrimarySnapPositionToleranceMeters);
+        leftPrimarySnapRotationToleranceDegrees = Mathf.Max(
+            0.0f,
+            leftPrimarySnapRotationToleranceDegrees);
         maximumPreviewLeadMeters = Mathf.Max(0.0f, maximumPreviewLeadMeters);
         fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);

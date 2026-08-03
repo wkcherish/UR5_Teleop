@@ -58,6 +58,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Optional legacy IK-to-drive lead window in degrees. Set to 0 to rely on the Articulation measured-joint lead guard only.")]
     public float maximumCommandLeadDegrees = 2.00f;
+    [Tooltip("Separate IK-to-drive lead window for wrist joints. Wrist joints own most grasp-frame orientation changes and need a larger window than shoulder/elbow joints.")]
+    public float maximumWristCommandLeadDegrees = 2.00f;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
@@ -217,6 +219,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public bool IsNearSingularity { get; private set; }
     public float LastDlsMinimumPivot { get; private set; }
     public bool WasIkCommandLeadLimited { get; private set; }
+    public float TargetStationarySeconds => targetStationaryTime;
+    public bool IsSettledTargetHoldActive => isSettledTargetHoldActive;
 
     /// <summary>
     /// 将命令 TCP 的姿态对齐到当前实际抓取坐标系，但不改变其位置。
@@ -303,6 +307,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private void OnValidate()
     {
         minimumJointDeltaDegrees = Mathf.Max(0.0f, minimumJointDeltaDegrees);
+        maximumCommandLeadDegrees = Mathf.Max(0.0f, maximumCommandLeadDegrees);
+        maximumWristCommandLeadDegrees = Mathf.Max(0.0f, maximumWristCommandLeadDegrees);
         dlsDamping = Mathf.Max(0.0f, dlsDamping);
         dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
         translationOrientationHoldWeight = Mathf.Max(0.0f, translationOrientationHoldWeight);
@@ -610,6 +616,17 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void BeginSafeRelease()
     {
+        if (UsesUr10StyleAnchoredPoseTeleop())
+        {
+            // The reference teleop loop owns the final filtered TcpTarget
+            // across release. Hold the physical arm once, but never rewrite
+            // that logical target back to the measured TCP.
+            safeReleaseSettlePending = false;
+            safeReleaseSettleElapsedSeconds = 0.0f;
+            EnterControllerIdleHold();
+            return;
+        }
+
         UpdateTrackingErrorsOnly();
         bool residualIsSmall = PositionError <= safeReleaseMaximumResidualMeters
             && RotationErrorDegrees <= safeReleaseMaximumResidualDegrees;
@@ -624,6 +641,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         // that lead once and explicitly, rather than letting multiple writers
         // repeatedly pull TcpTarget back to the physical arm.
         SnapTargetToActualPose("FollowerSafeRelease");
+    }
+
+    private bool UsesUr10StyleAnchoredPoseTeleop()
+    {
+        return velocityTeleop != null
+            && velocityTeleop.enabled
+            && velocityTeleop.UsesUr10StyleAnchoredPoseClutch;
     }
 
     private void SnapTargetToActualPose(string writer)
@@ -1034,6 +1058,8 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return;
         }
 
+        ClampWorkingJointTargetsToCommandLead();
+
         if (trajectoryPlayer != null && trajectoryPlayer.enabled)
         {
             trajectoryPlayer.EnqueueWaypointDegrees(workingJointTargetsDegrees, workingJointCount);
@@ -1045,6 +1071,34 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             workingJointCount,
             clampToDriveLimits,
             false);
+    }
+
+    private void ClampWorkingJointTargetsToCommandLead()
+    {
+        if (jointController == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < workingJointCount; i++)
+        {
+            float maximumLead = GetCommandLeadLimitDegrees(i, workingJointCount);
+            if (maximumLead <= 0.0f)
+            {
+                continue;
+            }
+
+            float driveTargetDegrees = jointController.GetDriveTargetDegrees(i);
+            float constrainedTargetDegrees = Mathf.Clamp(
+                workingJointTargetsDegrees[i],
+                driveTargetDegrees - maximumLead,
+                driveTargetDegrees + maximumLead);
+            if (Mathf.Abs(constrainedTargetDegrees - workingJointTargetsDegrees[i]) > 0.0001f)
+            {
+                workingJointTargetsDegrees[i] = constrainedTargetDegrees;
+                WasIkCommandLeadLimited = true;
+            }
+        }
     }
 
     private void HoldCurrentJointsAndClearTrajectory()
@@ -1451,8 +1505,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private bool IsJointCommandLeadLimited(int jointIndex)
     {
-        float maximumLead = Mathf.Max(0.0f, maximumCommandLeadDegrees);
-        if (maximumLead <= 0.0f || jointController == null)
+        if (jointController == null)
+        {
+            return false;
+        }
+
+        float maximumLead = GetCommandLeadLimitDegrees(jointIndex, jointController.JointCount);
+        if (maximumLead <= 0.0f)
         {
             return false;
         }
@@ -1461,6 +1520,21 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 - jointController.GetAppliedJointTargetDegrees(jointIndex)) > maximumLead;
         WasIkCommandLeadLimited |= isLimited;
         return isLimited;
+    }
+
+    private float GetCommandLeadLimitDegrees(int jointIndex, int jointCount)
+    {
+        int firstWristIndex = Mathf.Max(0, jointCount - wristJointCount);
+        if (jointIndex >= firstWristIndex)
+        {
+            float wristLead = Mathf.Max(0.0f, maximumWristCommandLeadDegrees);
+            if (wristLead > 0.0f)
+            {
+                return wristLead;
+            }
+        }
+
+        return Mathf.Max(0.0f, maximumCommandLeadDegrees);
     }
 
     private float SmoothJointDelta(int jointIndex, float rawDeltaDegrees)

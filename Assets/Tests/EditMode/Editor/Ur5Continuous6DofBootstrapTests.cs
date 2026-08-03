@@ -1,14 +1,17 @@
 using System;
+using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 using UnityEngine.XR;
 
 public class Ur5Continuous6DofBootstrapTests
 {
     [Test]
-    public void DefaultQuestProfile_UsesOnlyRightHandContinuous6Dof()
+    public void DefaultQuestProfile_UsesUr10StyleRightHandAnchoredPoseClutch()
     {
         GameObject owner = new GameObject("bootstrap-profile-test");
         try
@@ -16,15 +19,20 @@ public class Ur5Continuous6DofBootstrapTests
             var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
             Ur5ControlBootstrap.ApplyDefaultQuestTeleopProfile(teleop);
 
-            Assert.IsTrue(teleop.enableContinuous6DofClutch);
-            Assert.AreEqual(Ur5Continuous6DofConfig.Default.Version, teleop.continuous6DofConfig.Version);
+            Assert.IsTrue(teleop.enableUr10StyleAnchoredPoseClutch);
+            Assert.IsFalse(teleop.enableContinuous6DofClutch);
+            Assert.IsTrue(teleop.UsesUr10StyleAnchoredPoseClutch);
             Assert.AreEqual(XRNode.RightHand, teleop.positionControllerNode);
             Assert.AreEqual(XRNode.RightHand, teleop.rotationControllerNode);
+            Assert.AreEqual(XRNode.LeftHand, teleop.safetyControllerNode);
             Assert.IsTrue(teleop.usePositionGripAsDeadman);
             Assert.IsTrue(teleop.useRotationGripAsDeadman);
-            Assert.AreEqual(
-                Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta,
-                teleop.rotationInputMode);
+            Assert.IsTrue(teleop.useAnchoredPoseTeleopStrategy);
+            Assert.AreEqual(0.22f, teleop.anchoredPoseSmoothingStep, 0.000001f);
+            Assert.AreEqual(0.22f, teleop.anchoredPosePrecisionSmoothingStep, 0.000001f);
+            Assert.AreEqual(1.00f, teleop.relativePreviewPositionScale, 0.000001f);
+            Assert.AreEqual(1.00f, teleop.normalPositionScale, 0.000001f);
+            Assert.AreEqual(1.0f, teleop.relativePreviewRotationScale, 0.000001f);
 
             Assert.IsFalse(teleop.enableThreeModeController);
             Assert.IsFalse(teleop.useRightSecondaryButtonForInsertMode);
@@ -34,15 +42,26 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsFalse(teleop.enableLeftSecondaryOrientationHold);
             Assert.IsFalse(teleop.snapGraspApproachToVertical);
 
-            Assert.IsFalse(teleop.filterControllerPosition);
+            Assert.IsTrue(teleop.filterControllerPosition);
             Assert.IsFalse(teleop.useAdaptiveControllerPositionFilter);
+            Assert.AreEqual(0.0025f, teleop.controllerPositionJitterDeadbandMeters, 0.000001f);
+            Assert.AreEqual(1.0f, teleop.angularDeadbandDegrees, 0.000001f);
             Assert.AreEqual(0.0f, teleop.previewTargetDeadbandMeters, 0.000001f);
             Assert.AreEqual(0.0f, teleop.finePreviewTargetDeadbandMeters, 0.000001f);
             Assert.IsFalse(teleop.useAccelerationLimitedPreviewTrajectory);
             Assert.IsFalse(teleop.limitPreviewLeadToActualTcp);
+            Assert.IsTrue(teleop.freezeRobotWhenPositionHandStops);
+            Assert.AreEqual(0.0025f, teleop.controllerMotionEpsilonMeters, 0.000001f);
+            Assert.AreEqual(0.10f, teleop.controllerStopHoldSeconds, 0.000001f);
+            Assert.IsFalse(teleop.useRelativePoseCommandFilter);
+            Assert.IsFalse(teleop.useProgressivePositionResponse);
 
-            Assert.IsTrue(teleop.enableLeftPrimarySnapDown);
-            Assert.IsTrue(teleop.enableLeftPrimaryReadyPose);
+            Assert.IsFalse(teleop.enableLeftPrimarySnapDown);
+            Assert.IsFalse(teleop.enableLeftPrimaryReadyPose);
+            Assert.AreEqual(0.45f, teleop.leftPrimaryReadyPoseHoldSeconds, 0.000001f);
+            Assert.AreEqual(3.0f, teleop.leftPrimarySnapTimeoutSeconds, 0.000001f);
+            Assert.AreEqual(0.003f, teleop.leftPrimarySnapPositionToleranceMeters, 0.000001f);
+            Assert.AreEqual(0.50f, teleop.leftPrimarySnapRotationToleranceDegrees, 0.000001f);
         }
         finally
         {
@@ -51,7 +70,470 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void DefaultQuestProfile_UsesApprovedContinuousParameters()
+    public void ControlBootstrap_DefaultFollowerDoesNotFreezeOrSwitchToPrecisionTrackingDuringGripHold()
+    {
+        GameObject owner = new GameObject("follower-profile-test");
+        GameObject robot = new GameObject("follower-profile-robot");
+        GameObject target = new GameObject("TcpTarget");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.robotRoot = robot.transform;
+            bootstrap.tcpTarget = target.transform;
+            bootstrap.enableCartesianVelocityTeleop = true;
+            bootstrap.enableTcpTargetFollower = true;
+            bootstrap.enableQuest3Control = false;
+            bootstrap.enableKeyboardControl = false;
+            bootstrap.addUrScriptSpeedlClient = false;
+
+            InvokeNonPublic(bootstrap, "Awake");
+
+            var follower = robot.GetComponent<Ur5TcpTargetFollower>();
+            Assert.IsNotNull(follower);
+            Assert.IsFalse(follower.enablePrecisionAssemblyTracking);
+            Assert.IsFalse(follower.holdJointPoseWhenTargetSettled);
+            Assert.AreEqual(4.0f, follower.maximumCommandLeadDegrees, 0.000001f);
+            Assert.AreEqual(12.0f, follower.maximumWristCommandLeadDegrees, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void ControlBootstrap_StableJointDefaultsAllowResponsiveWristPoseTracking()
+    {
+        GameObject owner = new GameObject("joint-defaults-test");
+        try
+        {
+            var jointController = owner.AddComponent<Ur5ArticulationJointController>();
+
+            Ur5ControlBootstrap.ApplyStableJointDefaults(jointController);
+
+            Assert.IsTrue(jointController.limitDriveTargetLeadFromMeasuredJoint);
+            Assert.AreEqual(6.0f, jointController.maximumDriveTargetLeadDegrees, 0.000001f);
+            Assert.AreEqual(10.0f, jointController.maximumWristDriveTargetLeadDegrees, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_DefaultQuestMappingTracksControllerTranslationOneToOne()
+    {
+        GameObject owner = new GameObject("ur10-style-default-mapping-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            Ur5ControlBootstrap.ApplyDefaultQuestTeleopProfile(teleop);
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            target.transform.SetPositionAndRotation(startPosition, Quaternion.identity);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.04f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            AssertVectorNear(startPosition + new Vector3(0.04f, 0.0f, 0.0f), target.transform.position, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_RuntimeQuestSpeedProfileScalesAnchoredTranslation()
+    {
+        GameObject owner = new GameObject("ur10-style-runtime-speed-profile-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.questTranslationScale = 3.10f;
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            Ur5ControlBootstrap.ApplyDefaultQuestTeleopProfile(teleop);
+            bootstrap.ApplyQuestTeleopSpeedProfile(teleop);
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            target.transform.SetPositionAndRotation(startPosition, Quaternion.identity);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.04f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Assert.AreEqual(bootstrap.EffectiveQuestTranslationScale, teleop.normalPositionScale, 0.000001f);
+            AssertVectorNear(
+                startPosition + new Vector3(0.04f * bootstrap.EffectiveQuestTranslationScale, 0.0f, 0.0f),
+                target.transform.position,
+                0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_WhenGripIsReleased_DoesNotWriteTheTcpTarget()
+    {
+        GameObject owner = new GameObject("ur10-style-release-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.tcpPreviewTarget = target.transform;
+            Vector3 expectedPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion expectedRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            target.transform.SetPositionAndRotation(expectedPosition, expectedRotation);
+
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Assert.LessOrEqual(Vector3.Distance(expectedPosition, target.transform.position), 0.000001f);
+            Assert.LessOrEqual(Quaternion.Angle(expectedRotation, target.transform.rotation), 0.0001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_UsesConfiguredSmoothingStepForResponsiveTracking()
+    {
+        GameObject owner = new GameObject("ur10-style-smoothing-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 0.50f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion startRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            target.transform.SetPositionAndRotation(startPosition, startRotation);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.10f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            AssertVectorNear(startPosition + new Vector3(0.05f, 0.0f, 0.0f), target.transform.position, 0.000001f);
+            Assert.LessOrEqual(Quaternion.Angle(startRotation, target.transform.rotation), 0.0001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_MapsControllerRotationToTcpRotation()
+    {
+        GameObject owner = new GameObject("ur10-style-rotation-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 0.50f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion startRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            Quaternion controllerRotation = Quaternion.Euler(0.0f, 30.0f, 0.0f);
+            target.transform.SetPositionAndRotation(startPosition, startRotation);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, Vector3.zero, controllerRotation);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Quaternion expectedRotation = controllerRotation * startRotation;
+            AssertVectorNear(startPosition, target.transform.position, 0.000001f);
+            Assert.LessOrEqual(Quaternion.Angle(expectedRotation, target.transform.rotation), 0.0001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StyleFreeze_RebasesAnchorBeforeNextDeliberateMove()
+    {
+        GameObject owner = new GameObject("ur10-style-freeze-rebase-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 0.50f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion startRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            Vector3 heldHandPosition = new Vector3(0.10f, 0.0f, 0.0f);
+            target.transform.SetPositionAndRotation(startPosition, startRotation);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, heldHandPosition, Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+            Vector3 frozenTarget = target.transform.position;
+
+            InvokeNonPublic(
+                teleop,
+                "FreezeUr10StyleAtCurrentPose",
+                heldHandPosition,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, heldHandPosition + new Vector3(0.02f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            AssertVectorNear(frozenTarget + new Vector3(0.01f, 0.0f, 0.0f), target.transform.position, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StyleFollowerRelease_DoesNotSnapTheFinalTcpTargetBackToActualPose()
+    {
+        GameObject owner = new GameObject("ur10-style-follower-release-test");
+        GameObject robot = new GameObject("ur10-style-follower-release-robot");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+            follower.velocityTeleop = teleop;
+            follower.tcpTarget = target.transform;
+            Vector3 expectedPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion expectedRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            target.transform.SetPositionAndRotation(expectedPosition, expectedRotation);
+
+            InvokeNonPublic(follower, "BeginSafeRelease");
+
+            Assert.LessOrEqual(Vector3.Distance(expectedPosition, target.transform.position), 0.000001f);
+            Assert.LessOrEqual(Quaternion.Angle(expectedRotation, target.transform.rotation), 0.0001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void ControlBootstrap_QuestUdpShadowTelemetryKeepsLocalControlByDefault()
+    {
+        GameObject owner = new GameObject("udp-shadow-bootstrap-test");
+        GameObject robot = new GameObject("udp-shadow-robot");
+        GameObject target = new GameObject("TcpTarget");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.robotRoot = robot.transform;
+            bootstrap.tcpTarget = target.transform;
+            bootstrap.enableQuestUdpShadowTelemetry = true;
+            bootstrap.questShadowReceiverHost = "192.168.10.37";
+            bootstrap.questShadowReceiverPort = 8080;
+            bootstrap.enableCartesianVelocityTeleop = true;
+            bootstrap.enableKeyboardControl = true;
+            bootstrap.enableQuest3Control = true;
+            bootstrap.enableTcpTargetFollower = true;
+            bootstrap.addUrScriptSpeedlClient = true;
+
+            InvokeNonPublic(bootstrap, "Awake");
+
+            var sender = owner.GetComponent<Quest3UdpTeleopSender>();
+            Assert.IsNotNull(sender);
+            Assert.IsTrue(sender.sendPackets);
+            Assert.AreEqual("192.168.10.37", sender.receiverHost);
+            Assert.AreEqual(8080, sender.receiverPort);
+            var stabilizer = owner.GetComponent<Ur5PhysicsStabilizer>();
+            Assert.IsNotNull(stabilizer, "UDP bridge mode must still stabilize the Unity robot model.");
+            Assert.AreSame(robot.transform, stabilizer.robotRoot);
+            Assert.IsNotNull(owner.GetComponent<Ur5CartesianVelocityTeleopController>());
+            Assert.IsNotNull(owner.GetComponent<Ur5UrScriptSpeedlClient>());
+            Assert.IsNotNull(robot.GetComponent<Quest3RobotiqGripperController>());
+            Assert.IsNotNull(robot.GetComponent<Ur5TcpTargetFollower>());
+            Assert.IsNull(target.GetComponent<TcpTargetKeyboardController>());
+            Assert.IsNull(target.GetComponent<Quest3TcpTargetController>());
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void ControlBootstrap_ExplicitQuestUdpTelemetryOnlyDisablesLocalWriters()
+    {
+        GameObject owner = new GameObject("udp-only-bootstrap-test");
+        GameObject robot = new GameObject("udp-only-robot");
+        GameObject target = new GameObject("TcpTarget");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.robotRoot = robot.transform;
+            bootstrap.tcpTarget = target.transform;
+            bootstrap.enableQuestUdpShadowTelemetry = true;
+            bootstrap.disableLocalTeleopWhenQuestUdpShadowTelemetry = true;
+            bootstrap.questShadowReceiverHost = "192.168.10.37";
+            bootstrap.questShadowReceiverPort = 8080;
+            bootstrap.enableCartesianVelocityTeleop = true;
+            bootstrap.enableKeyboardControl = true;
+            bootstrap.enableQuest3Control = true;
+            bootstrap.enableTcpTargetFollower = true;
+            bootstrap.addUrScriptSpeedlClient = true;
+
+            InvokeNonPublic(bootstrap, "Awake");
+
+            Assert.IsNotNull(owner.GetComponent<Quest3UdpTeleopSender>());
+            Assert.IsNotNull(owner.GetComponent<Ur5PhysicsStabilizer>());
+            Assert.IsNull(owner.GetComponent<Ur5CartesianVelocityTeleopController>());
+            Assert.IsNull(owner.GetComponent<Ur5UrScriptSpeedlClient>());
+            Assert.IsNull(robot.GetComponent<Quest3RobotiqGripperController>());
+            Assert.IsNull(robot.GetComponent<Ur5TcpTargetFollower>());
+            Assert.IsNull(target.GetComponent<TcpTargetKeyboardController>());
+            Assert.IsNull(target.GetComponent<Quest3TcpTargetController>());
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void LeftSafetyPoseOwnership_IsIncludedInCommandActivity()
+    {
+        GameObject owner = new GameObject("left-safety-owner-test");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            FieldInfo field = typeof(Ur5CartesianVelocityTeleopController).GetField(
+                "leftSafetyPoseController",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(field, "主控制器必须持有独立的左手安全姿态状态机。");
+
+            var controller = (Ur5LeftSafetyPoseController)field.GetValue(teleop);
+            if (controller == null)
+            {
+                // executeMethod 的 EditMode 直接回归不会自动触发 Awake，显式初始化可保持两种测试入口一致。
+                InvokeNonPublic(teleop, "Awake");
+                controller = (Ur5LeftSafetyPoseController)field.GetValue(teleop);
+            }
+
+            Assert.IsNotNull(controller);
+            controller.Step(new Ur5LeftSafetyPoseStepInput(
+                rightGripHeld: false,
+                leftPoseValid: true,
+                leftGripHeld: true,
+                primaryPressed: true,
+                snapTargetReached: false,
+                readyPoseActive: false,
+                deltaTimeSeconds: 0.10f));
+
+            Assert.IsTrue(teleop.IsSafetyPoseCommandActive);
+            Assert.IsTrue(teleop.IsCommandActive);
+            Assert.AreEqual(Ur5LeftSafetyPoseState.ButtonHeld, teleop.SafetyPoseState);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
+    public void LeftSafetySnapReach_RequiresBothPositionAndRotationTolerance()
+    {
+        Assert.IsTrue(Ur5CartesianVelocityTeleopController.IsSafetySnapTargetReached(
+            positionErrorMeters: 0.0029f,
+            rotationErrorDegrees: 0.49f,
+            positionToleranceMeters: 0.003f,
+            rotationToleranceDegrees: 0.50f));
+        Assert.IsFalse(Ur5CartesianVelocityTeleopController.IsSafetySnapTargetReached(
+            positionErrorMeters: 0.0031f,
+            rotationErrorDegrees: 0.49f,
+            positionToleranceMeters: 0.003f,
+            rotationToleranceDegrees: 0.50f));
+        Assert.IsFalse(Ur5CartesianVelocityTeleopController.IsSafetySnapTargetReached(
+            positionErrorMeters: 0.0029f,
+            rotationErrorDegrees: 0.51f,
+            positionToleranceMeters: 0.003f,
+            rotationToleranceDegrees: 0.50f));
+    }
+
+    [Test]
+    public void LegacyContinuousConfig_RemainsAvailableButIsNotTheDefaultQuestPath()
     {
         GameObject owner = new GameObject("bootstrap-parameter-test");
         try
@@ -107,6 +589,28 @@ public class Ur5Continuous6DofBootstrapTests
         Assert.That(capturedLog, Does.Contain("translationGain="));
         Assert.That(capturedLog, Does.Contain("rotationGain="));
         Assert.That(capturedLog, Does.Contain("rotationFilterGapDeg="));
+        Assert.That(capturedLog, Does.Contain("rawHandRotation="));
+        Assert.That(capturedLog, Does.Contain("stationarySeconds="));
+        Assert.That(capturedLog, Does.Contain("settledHold="));
+        Assert.That(capturedLog, Does.Contain("nearSingularity="));
+    }
+
+    [Test]
+    public void FollowerRuntimeDiagnostics_AreReadOnlyProperties()
+    {
+        PropertyInfo stationarySeconds = typeof(Ur5TcpTargetFollower).GetProperty(
+            "TargetStationarySeconds",
+            BindingFlags.Instance | BindingFlags.Public);
+        PropertyInfo settledHold = typeof(Ur5TcpTargetFollower).GetProperty(
+            "IsSettledTargetHoldActive",
+            BindingFlags.Instance | BindingFlags.Public);
+
+        Assert.IsNotNull(stationarySeconds);
+        Assert.IsNotNull(settledHold);
+        Assert.IsTrue(stationarySeconds.CanRead);
+        Assert.IsFalse(stationarySeconds.CanWrite);
+        Assert.IsTrue(settledHold.CanRead);
+        Assert.IsFalse(settledHold.CanWrite);
     }
 
     [Test]
@@ -128,7 +632,20 @@ public class Ur5Continuous6DofBootstrapTests
             string expectedTail =
                 "continuous_6dof_enabled,continuous_state,continuous_fault,"
                 + "controller_distance_m,controller_angle_deg,translation_gain,"
-                + "rotation_gain,logical_to_filtered_rotation_deg";
+                + "rotation_gain,logical_to_filtered_rotation_deg,"
+                + "raw_hand_pos_x,raw_hand_pos_y,raw_hand_pos_z,"
+                + "raw_hand_rot_x,raw_hand_rot_y,raw_hand_rot_z,raw_hand_rot_w,"
+                + "logical_pos_x,logical_pos_y,logical_pos_z,"
+                + "logical_rot_x,logical_rot_y,logical_rot_z,logical_rot_w,"
+                + "constrained_pos_x,constrained_pos_y,constrained_pos_z,"
+                + "filtered_pos_x,filtered_pos_y,filtered_pos_z,"
+                + "filtered_rot_x,filtered_rot_y,filtered_rot_z,filtered_rot_w,"
+                + "actual_grasp_rot_x,actual_grasp_rot_y,actual_grasp_rot_z,actual_grasp_rot_w,"
+                + "target_stationary_s,settled_hold,dls_min_pivot,near_singularity,"
+                + "ik_failure_count,ik_lead_limited,"
+                + "j1_drive_deg,j2_drive_deg,j3_drive_deg,j4_drive_deg,j5_drive_deg,j6_drive_deg,"
+                + "j1_measured_deg,j2_measured_deg,j3_measured_deg,"
+                + "j4_measured_deg,j5_measured_deg,j6_measured_deg";
 
             Assert.That(lines[0], Does.EndWith(expectedTail));
             Assert.AreEqual(
@@ -142,6 +659,110 @@ public class Ur5Continuous6DofBootstrapTests
         }
     }
 
+    [Test]
+    public void PoseCsvRecorder_AutoStartsOnlyOnAndroid()
+    {
+        Assert.IsTrue(Ur5PoseCsvRecorder.ShouldAutoStartRecording(RuntimePlatform.Android));
+        Assert.IsFalse(Ur5PoseCsvRecorder.ShouldAutoStartRecording(RuntimePlatform.OSXEditor));
+        Assert.IsFalse(Ur5PoseCsvRecorder.ShouldAutoStartRecording(RuntimePlatform.WindowsEditor));
+    }
+
+    [Test]
+    public void ControlBootstrap_EnforcesQuestRecorderDefaults()
+    {
+        GameObject owner = new GameObject("recorder-bootstrap-test");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            var recorder = owner.AddComponent<Ur5PoseCsvRecorder>();
+            recorder.autoRecordOnAndroid = false;
+            recorder.flushIntervalSeconds = 7.0f;
+            recorder.sampleInterval = 0.50f;
+
+            InvokeNonPublic(bootstrap, "ConfigureRecorder", null, null, null, null);
+
+            Assert.IsTrue(recorder.autoRecordOnAndroid);
+            Assert.AreEqual(1.0f, recorder.flushIntervalSeconds, 0.000001f);
+            Assert.AreEqual(0.02f, recorder.sampleInterval, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
+    public void PoseCsvRecorder_PauseAndRepeatedSaveKeepOneCompleteSnapshot()
+    {
+        string outputPath = Path.Combine(
+            Path.GetTempPath(),
+            "ur5-task7-recorder-" + Guid.NewGuid().ToString("N") + ".csv");
+        GameObject owner = new GameObject("csv-persistence-test");
+        try
+        {
+            var recorder = owner.AddComponent<Ur5PoseCsvRecorder>();
+            InvokeNonPublic(recorder, "Start");
+            recorder.StartRecording();
+            InvokeNonPublic(recorder, "AppendSample");
+            SetNonPublicField(recorder, "outputPath", outputPath);
+
+            InvokeNonPublic(recorder, "OnApplicationPause", true);
+            string firstSnapshot = File.ReadAllText(outputPath);
+            recorder.SaveRecordingSnapshot();
+            string secondSnapshot = File.ReadAllText(outputPath);
+
+            Assert.AreEqual(firstSnapshot, secondSnapshot);
+            string header = GetRecorderCsv(recorder).ToString().Split('\n')[0];
+            Assert.AreEqual(
+                1,
+                CountOccurrences(secondSnapshot, header),
+                "重复生命周期保存不能追加第二个表头。");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            if (File.Exists(outputPath))
+            {
+                File.Delete(outputPath);
+            }
+        }
+    }
+
+    [Test]
+    public void PoseCsvRecorder_RepeatedSaveFailureLogsOnlyOnce()
+    {
+        int saveFailureLogCount = 0;
+        GameObject owner = new GameObject("csv-save-failure-test");
+        Application.LogCallback callback = (condition, stackTrace, type) =>
+        {
+            if (type == LogType.Error && condition.Contains("UR5 recording save failed"))
+            {
+                saveFailureLogCount++;
+            }
+        };
+
+        try
+        {
+            var recorder = owner.AddComponent<Ur5PoseCsvRecorder>();
+            InvokeNonPublic(recorder, "Start");
+            SetNonPublicField(recorder, "outputPath", Path.GetTempPath());
+
+            Application.logMessageReceived += callback;
+            LogAssert.Expect(LogType.Error, new Regex("^UR5 recording save failed:"));
+            recorder.SaveRecordingSnapshot();
+            recorder.SaveRecordingSnapshot();
+
+            Assert.AreEqual(1, saveFailureLogCount);
+            SetNonPublicField(recorder, "outputPath", string.Empty);
+        }
+        finally
+        {
+            Application.logMessageReceived -= callback;
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
     private static void InvokeNonPublic(object target, string methodName)
     {
         MethodInfo method = target.GetType().GetMethod(
@@ -149,6 +770,62 @@ public class Ur5Continuous6DofBootstrapTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.IsNotNull(method, methodName + " should exist.");
         method.Invoke(target, null);
+    }
+
+    private static void InvokeNonPublic(object target, string methodName, params object[] arguments)
+    {
+        MethodInfo method = target.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(method, methodName + " should exist.");
+        method.Invoke(target, arguments);
+    }
+
+    private static void SetNonPublicField(object target, string fieldName, object value)
+    {
+        FieldInfo field = target.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field, fieldName + " should exist.");
+        field.SetValue(target, value);
+    }
+
+    private static void SetUr10StyleLatestPose(
+        Ur5CartesianVelocityTeleopController teleop,
+        Vector3 position,
+        Quaternion rotation)
+    {
+        SetNonPublicField(teleop, "latestRawPositionWorld", position);
+        SetNonPublicField(teleop, "latestPositionWorld", position);
+        SetNonPublicField(teleop, "latestRotationWorld", rotation);
+        SetNonPublicField(teleop, "latestRawPositionValid", true);
+        SetNonPublicField(teleop, "latestPositionValid", true);
+        SetNonPublicField(teleop, "latestRotationValid", true);
+        InvokeNonPublic(
+            teleop,
+            "UpdateUr10StyleAnchoredPoseInput",
+            true,
+            position,
+            true,
+            rotation);
+    }
+
+    private static void AssertVectorNear(Vector3 expected, Vector3 actual, float tolerance)
+    {
+        Assert.LessOrEqual(Vector3.Distance(expected, actual), tolerance);
+    }
+
+    private static int CountOccurrences(string value, string search)
+    {
+        int count = 0;
+        int index = 0;
+        while ((index = value.IndexOf(search, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += search.Length;
+        }
+
+        return count;
     }
 
     private static StringBuilder GetRecorderCsv(Ur5PoseCsvRecorder recorder)

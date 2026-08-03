@@ -1,3 +1,4 @@
+using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -15,21 +16,28 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
     public Ur5UrScriptSpeedlClient speedlClient;
     public KeyCode toggleRecordingKey = KeyCode.R;
     public bool recordOnStart = false;
+    [Tooltip("Quest Android 运行时自动开始记录；Editor 不会自动开启。")]
+    public bool autoRecordOnAndroid = true;
     public float sampleInterval = 0.02f;
+    [Tooltip("录制期间覆盖保存完整 CSV 快照的间隔，单位秒。")]
+    public float flushIntervalSeconds = 1.0f;
 
     private StringBuilder csv;
     private float nextSampleTime;
+    private float nextFlushTime;
     private bool isRecording;
     private string outputPath;
+    private bool hasLoggedSaveFailure;
 
     private void Start()
     {
         csv = new StringBuilder();
         ResolveControlReferences();
-        csv.AppendLine("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,grasp_assist_active,velocity_active,position_clutched,rotation_clutched,fine_control_active,rotation_input_mode,rotation_joystick_valid,rotation_joystick_x,rotation_joystick_y,joystick_roll_modifier,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,raw_base_wx_radps,raw_base_wy_radps,raw_base_wz_radps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps,continuous_6dof_enabled,continuous_state,continuous_fault,controller_distance_m,controller_angle_deg,translation_gain,rotation_gain,logical_to_filtered_rotation_deg");
+        csv.Append("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,grasp_assist_active,velocity_active,position_clutched,rotation_clutched,fine_control_active,rotation_input_mode,rotation_joystick_valid,rotation_joystick_x,rotation_joystick_y,joystick_roll_modifier,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,raw_base_wx_radps,raw_base_wy_radps,raw_base_wz_radps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps,continuous_6dof_enabled,continuous_state,continuous_fault,controller_distance_m,controller_angle_deg,translation_gain,rotation_gain,logical_to_filtered_rotation_deg");
+        csv.AppendLine(",raw_hand_pos_x,raw_hand_pos_y,raw_hand_pos_z,raw_hand_rot_x,raw_hand_rot_y,raw_hand_rot_z,raw_hand_rot_w,logical_pos_x,logical_pos_y,logical_pos_z,logical_rot_x,logical_rot_y,logical_rot_z,logical_rot_w,constrained_pos_x,constrained_pos_y,constrained_pos_z,filtered_pos_x,filtered_pos_y,filtered_pos_z,filtered_rot_x,filtered_rot_y,filtered_rot_z,filtered_rot_w,actual_grasp_rot_x,actual_grasp_rot_y,actual_grasp_rot_z,actual_grasp_rot_w,target_stationary_s,settled_hold,dls_min_pivot,near_singularity,ik_failure_count,ik_lead_limited,j1_drive_deg,j2_drive_deg,j3_drive_deg,j4_drive_deg,j5_drive_deg,j6_drive_deg,j1_measured_deg,j2_measured_deg,j3_measured_deg,j4_measured_deg,j5_measured_deg,j6_measured_deg");
         outputPath = Path.Combine(Application.persistentDataPath, "ur5_pose_log.csv");
 
-        if (recordOnStart)
+        if (recordOnStart || (autoRecordOnAndroid && ShouldAutoStartRecording(Application.platform)))
         {
             StartRecording();
         }
@@ -56,20 +64,72 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
 
         nextSampleTime = Time.time + sampleInterval;
         AppendSample();
+        if (Time.unscaledTime >= nextFlushTime)
+        {
+            SaveRecordingSnapshot();
+            nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
+        }
     }
 
     public void StartRecording()
     {
         isRecording = true;
         nextSampleTime = Time.time;
+        nextFlushTime = Time.unscaledTime + Mathf.Max(0.1f, flushIntervalSeconds);
         Debug.Log("UR5 recording started.");
     }
 
     public void StopRecording()
     {
+        SaveRecordingSnapshot();
         isRecording = false;
-        File.WriteAllText(outputPath, csv.ToString());
-        Debug.Log("UR5 recording saved to: " + outputPath);
+    }
+
+    public static bool ShouldAutoStartRecording(RuntimePlatform platform)
+    {
+        return platform == RuntimePlatform.Android;
+    }
+
+    public void SaveRecordingSnapshot()
+    {
+        if (csv == null || csv.Length == 0 || string.IsNullOrEmpty(outputPath))
+        {
+            return;
+        }
+
+        try
+        {
+            // 每次覆盖完整快照，不追加表头；生命周期回调重复触发也保持幂等。
+            File.WriteAllText(outputPath, csv.ToString());
+            hasLoggedSaveFailure = false;
+            Debug.Log("UR5 recording saved to: " + outputPath);
+        }
+        catch (IOException exception)
+        {
+            LogSaveFailureOnce(exception);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            LogSaveFailureOnce(exception);
+        }
+    }
+
+    private void OnApplicationPause(bool paused)
+    {
+        if (paused)
+        {
+            SaveRecordingSnapshot();
+        }
+    }
+
+    private void OnApplicationQuit()
+    {
+        SaveRecordingSnapshot();
+    }
+
+    private void OnDisable()
+    {
+        SaveRecordingSnapshot();
     }
 
     private void AppendSample()
@@ -111,6 +171,38 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         float logicalToFilteredRotationDegrees = velocityTeleop != null
             ? Quaternion.Angle(velocityTeleop.LogicalCommandRotation, velocityTeleop.FilteredCommandRotation)
             : 0.0f;
+        Vector3 rawHandPosition = velocityTeleop != null
+            ? velocityTeleop.RawControllerPositionWorld
+            : Vector3.zero;
+        Quaternion rawHandRotation = velocityTeleop != null
+            ? velocityTeleop.RawControllerRotationWorld
+            : default(Quaternion);
+        Vector3 logicalPosition = velocityTeleop != null
+            ? velocityTeleop.LogicalCommandPosition
+            : Vector3.zero;
+        Quaternion logicalRotation = velocityTeleop != null
+            ? velocityTeleop.LogicalCommandRotation
+            : default(Quaternion);
+        Vector3 constrainedPosition = velocityTeleop != null
+            ? velocityTeleop.ConstrainedCommandPosition
+            : Vector3.zero;
+        Vector3 filteredPosition = velocityTeleop != null
+            ? velocityTeleop.FilteredCommandPosition
+            : Vector3.zero;
+        Quaternion filteredRotation = velocityTeleop != null
+            ? velocityTeleop.FilteredCommandRotation
+            : default(Quaternion);
+        Quaternion actualGraspRotation = tcpFollower != null
+            ? tcpFollower.ActualGraspRotation
+            : default(Quaternion);
+        float targetStationarySeconds = tcpFollower != null
+            ? tcpFollower.TargetStationarySeconds
+            : 0.0f;
+        bool settledHold = tcpFollower != null && tcpFollower.IsSettledTargetHoldActive;
+        float dlsMinimumPivot = tcpFollower != null ? tcpFollower.LastDlsMinimumPivot : 0.0f;
+        bool nearSingularity = tcpFollower != null && tcpFollower.IsNearSingularity;
+        int ikFailureCount = tcpFollower != null ? tcpFollower.IkFailureCount : 0;
+        bool ikLeadLimited = tcpFollower != null && tcpFollower.WasIkCommandLeadLimited;
 
         if (velocityTeleop != null)
         {
@@ -185,7 +277,65 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         csv.Append(',').Append(Format(continuousRotationGain));
         csv.Append(',').Append(Format(logicalToFilteredRotationDegrees));
 
+        // 以下字段按“输入 -> 命令 -> IK -> 物理关节”顺序记录，便于定位静止摆动最早出现在哪一层。
+        AppendVector3(rawHandPosition);
+        AppendQuaternion(rawHandRotation);
+        AppendVector3(logicalPosition);
+        AppendQuaternion(logicalRotation);
+        AppendVector3(constrainedPosition);
+        AppendVector3(filteredPosition);
+        AppendQuaternion(filteredRotation);
+        AppendQuaternion(actualGraspRotation);
+        csv.Append(',').Append(Format(targetStationarySeconds));
+        csv.Append(',').Append(settledHold ? "1" : "0");
+        csv.Append(',').Append(Format(dlsMinimumPivot));
+        csv.Append(',').Append(nearSingularity ? "1" : "0");
+        csv.Append(',').Append(ikFailureCount.ToString(CultureInfo.InvariantCulture));
+        csv.Append(',').Append(ikLeadLimited ? "1" : "0");
+
+        for (int i = 0; i < 6; i++)
+        {
+            float driveTarget = jointController != null
+                ? jointController.GetDriveTargetDegrees(i)
+                : 0.0f;
+            csv.Append(',').Append(Format(driveTarget));
+        }
+
+        for (int i = 0; i < 6; i++)
+        {
+            float measuredJoint = jointController != null
+                ? jointController.GetMeasuredJointDegrees(i)
+                : 0.0f;
+            csv.Append(',').Append(Format(measuredJoint));
+        }
+
         csv.AppendLine();
+    }
+
+    private void AppendVector3(Vector3 value)
+    {
+        csv.Append(',').Append(Format(value.x));
+        csv.Append(',').Append(Format(value.y));
+        csv.Append(',').Append(Format(value.z));
+    }
+
+    private void AppendQuaternion(Quaternion value)
+    {
+        csv.Append(',').Append(Format(value.x));
+        csv.Append(',').Append(Format(value.y));
+        csv.Append(',').Append(Format(value.z));
+        csv.Append(',').Append(Format(value.w));
+    }
+
+    private void LogSaveFailureOnce(Exception exception)
+    {
+        if (hasLoggedSaveFailure)
+        {
+            return;
+        }
+
+        hasLoggedSaveFailure = true;
+        Debug.LogError("UR5 recording save failed: " + exception.Message);
     }
 
     private void ResolveControlReferences()

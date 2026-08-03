@@ -85,6 +85,64 @@ public class Ur5JointCommandAntiWindupTests
         Assert.AreEqual(6.0f, waypoint[0], 0.0001f);
     }
 
+    [Test]
+    public void CommitJointWaypoint_WhenWaypointExceedsCommandLead_ClampsLogicalTargetToDriveTarget()
+    {
+        ArticulationDrive drive = joint.xDrive;
+        drive.target = 6.0f;
+        joint.xDrive = drive;
+        GetPrivateList<float>(controller, "appliedJointTargets")[0] = 6.0f;
+        GetPrivateList<float>(controller, "jointTargets")[0] = 120.0f;
+
+        var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+        follower.jointController = controller;
+        follower.maximumCommandLeadDegrees = 2.0f;
+        InvokeNonPublic(follower, "BeginJointWaypoint", 1);
+        InvokeNonPublic(follower, "QueueJointDelta", 0, 120.0f);
+        InvokeNonPublic(follower, "CommitJointWaypoint");
+
+        Assert.AreEqual(8.0f, controller.GetJointTargetDegrees(0), 0.0001f);
+        Assert.AreEqual(6.0f, controller.GetDriveTargetDegrees(0), 0.0001f);
+        Assert.IsTrue(follower.WasIkCommandLeadLimited);
+    }
+
+    [Test]
+    public void CommitJointWaypoint_WhenWristWaypointExceedsCommandLead_UsesWristLeadWindow()
+    {
+        var joints = GetPrivateList<ArticulationBody>(controller, "joints");
+        var targets = GetPrivateList<float>(controller, "jointTargets");
+        var appliedTargets = GetPrivateList<float>(controller, "appliedJointTargets");
+        var appliedVelocities = GetPrivateList<float>(controller, "appliedJointVelocities");
+        joints.Clear();
+        targets.Clear();
+        appliedTargets.Clear();
+        appliedVelocities.Clear();
+        for (int index = 0; index < 6; index++)
+        {
+            GameObject owner = new GameObject("anti-windup-joint-" + index);
+            owner.transform.SetParent(rootOwner.transform, false);
+            ArticulationBody body = owner.AddComponent<ArticulationBody>();
+            body.jointType = ArticulationJointType.RevoluteJoint;
+            joints.Add(body);
+            targets.Add(0.0f);
+            appliedTargets.Add(0.0f);
+            appliedVelocities.Add(0.0f);
+        }
+
+        var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+        follower.jointController = controller;
+        follower.maximumCommandLeadDegrees = 4.0f;
+        follower.maximumWristCommandLeadDegrees = 12.0f;
+        InvokeNonPublic(follower, "BeginJointWaypoint", 6);
+        InvokeNonPublic(follower, "QueueJointDelta", 0, 120.0f);
+        InvokeNonPublic(follower, "QueueJointDelta", 5, 120.0f);
+        InvokeNonPublic(follower, "CommitJointWaypoint");
+
+        Assert.AreEqual(4.0f, controller.GetJointTargetDegrees(0), 0.0001f);
+        Assert.AreEqual(12.0f, controller.GetJointTargetDegrees(5), 0.0001f);
+        Assert.IsTrue(follower.WasIkCommandLeadLimited);
+    }
+
     private static List<T> GetPrivateList<T>(object target, string fieldName)
     {
         FieldInfo field = target.GetType().GetField(
