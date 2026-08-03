@@ -46,6 +46,24 @@ public class Ur5JointCommandAntiWindupTests
             "The applied cache must not remain at an unapplied 120-degree request.");
     }
 
+    [Test]
+    public void BeginJointWaypoint_WhenTrajectoryStateDiverged_SeedsFromDriveTarget()
+    {
+        ArticulationDrive drive = joint.xDrive;
+        drive.target = 6.0f;
+        joint.xDrive = drive;
+        GetPrivateList<float>(controller, "appliedJointTargets")[0] = 120.0f;
+
+        var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+        follower.jointController = controller;
+        InvokeNonPublic(follower, "BeginJointWaypoint", 1);
+
+        float[] waypoint = GetPrivateField<float[]>(
+            follower,
+            "workingJointTargetsDegrees");
+        Assert.AreEqual(6.0f, waypoint[0], 0.0001f);
+    }
+
     private static List<T> GetPrivateList<T>(object target, string fieldName)
     {
         FieldInfo field = target.GetType().GetField(
@@ -53,6 +71,15 @@ public class Ur5JointCommandAntiWindupTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.IsNotNull(field, fieldName + " should exist.");
         return (List<T>)field.GetValue(target);
+    }
+
+    private static T GetPrivateField<T>(object target, string fieldName)
+    {
+        FieldInfo field = target.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field, fieldName + " should exist.");
+        return (T)field.GetValue(target);
     }
 
     private static void InvokeNonPublic(object target, string methodName, params object[] arguments)

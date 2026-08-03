@@ -1008,11 +1008,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         EnsureWorkingJointBuffer(workingJointCount);
         for (int i = 0; i < workingJointCount; i++)
         {
-            // DLS is evaluated from the current physical geometry. Building a
-            // new waypoint from an older, un-applied logical target would
-            // repeatedly integrate corrections against stale geometry and can
-            // overshoot when the Drive is rate limited.
-            workingJointTargetsDegrees[i] = jointController.GetAppliedJointTargetDegrees(i);
+            // DLS is evaluated from measured geometry, so each correction must start
+            // from the target that was actually assigned to the Articulation Drive.
+            workingJointTargetsDegrees[i] = jointController.GetDriveTargetDegrees(i);
         }
 
         workingJointWaypointChanged = false;
