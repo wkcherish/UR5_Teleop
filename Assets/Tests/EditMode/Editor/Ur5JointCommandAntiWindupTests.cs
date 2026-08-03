@@ -5,6 +5,7 @@ using UnityEngine;
 
 public class Ur5JointCommandAntiWindupTests
 {
+    private GameObject rootOwner;
     private GameObject controllerOwner;
     private GameObject jointOwner;
     private Ur5ArticulationJointController controller;
@@ -13,10 +14,16 @@ public class Ur5JointCommandAntiWindupTests
     [SetUp]
     public void SetUp()
     {
+        rootOwner = new GameObject("anti-windup-root");
+        rootOwner.AddComponent<ArticulationBody>();
+
         controllerOwner = new GameObject("anti-windup-controller");
         controllerOwner.SetActive(false);
         jointOwner = new GameObject("anti-windup-joint");
+        jointOwner.transform.SetParent(rootOwner.transform, false);
         joint = jointOwner.AddComponent<ArticulationBody>();
+        joint.jointType = ArticulationJointType.RevoluteJoint;
+        joint.jointPosition = new ArticulationReducedSpace(0.0f);
         controller = controllerOwner.AddComponent<Ur5ArticulationJointController>();
         controller.limitDriveTargetLeadFromMeasuredJoint = false;
 
@@ -30,7 +37,21 @@ public class Ur5JointCommandAntiWindupTests
     public void TearDown()
     {
         Object.DestroyImmediate(controllerOwner);
-        Object.DestroyImmediate(jointOwner);
+        Object.DestroyImmediate(rootOwner);
+    }
+
+    [Test]
+    public void ApplyDriveTarget_WhenMeasuredRevoluteJointIsAtZero_StoresConstrainedTarget()
+    {
+        Assert.Greater(joint.jointPosition.dofCount, 0);
+        Assert.AreEqual(0.0f, joint.jointPosition[0] * Mathf.Rad2Deg, 0.0001f);
+
+        controller.limitDriveTargetLeadFromMeasuredJoint = true;
+        controller.maximumDriveTargetLeadDegrees = 6.0f;
+        InvokeNonPublic(controller, "ApplyDriveTarget", 0, 120.0f);
+
+        Assert.AreEqual(6.0f, controller.GetDriveTargetDegrees(0), 0.0001f);
+        Assert.AreEqual(6.0f, controller.GetAppliedJointTargetDegrees(0), 0.0001f);
     }
 
     [Test]
