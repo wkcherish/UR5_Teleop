@@ -536,8 +536,10 @@ public class Ur5ArticulationJointController : MonoBehaviour
         ArticulationDrive drive = joints[index].xDrive;
         // 所有写入 Articulation Drive 的路径（IK、轨迹、按键和保持）统一经过
         // 同一闭环保护，避免某条旁路重新引入瞬时大关节误差。
-        drive.target = ConstrainDriveTargetLead(index, targetDegrees);
+        float constrainedTargetDegrees = ConstrainDriveTargetLead(index, targetDegrees);
+        drive.target = constrainedTargetDegrees;
         joints[index].xDrive = drive;
+        appliedJointTargets[index] = constrainedTargetDegrees;
     }
 
     /// <summary>
