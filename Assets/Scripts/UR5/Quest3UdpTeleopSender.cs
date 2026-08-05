@@ -26,6 +26,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         public bool clutch;
         public float grip;
         public float trigger;
+        public bool rotation_adjust;
         public bool recenter;
         public bool stop_episode;
     }
@@ -137,6 +138,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         }
 
         bool clutch = ReadClutch(out float gripAmount);
+        bool primaryPressed = ReadButton(CommonUsages.primaryButton);
 
         // 故意不经过 XR Origin：PC 端需要的是 Quest tracking frame 的原始数据，
         // 再以 clutch 相对位姿方式映射到 UR5 base frame。
@@ -154,7 +156,8 @@ public class Quest3UdpTeleopSender : MonoBehaviour
                 clutch = clutch,
                 grip = gripAmount,
                 trigger = ReadTrigger(),
-                recenter = sendPrimaryButtonAsRecenter && ReadButton(CommonUsages.primaryButton),
+                rotation_adjust = primaryPressed,
+                recenter = sendPrimaryButtonAsRecenter && primaryPressed,
                 stop_episode = sendSecondaryButtonAsStopEpisode && ReadButton(CommonUsages.secondaryButton)
             }
         };

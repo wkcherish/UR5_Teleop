@@ -752,6 +752,19 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
+    public void QuestUdpTelemetryProtocol_IncludesRotationAdjustButton()
+    {
+        Type buttonsPayload = typeof(Quest3UdpTeleopSender).GetNestedType(
+            "ButtonsPayload",
+            BindingFlags.NonPublic);
+
+        Assert.IsNotNull(buttonsPayload, "Quest UDP telemetry must keep an explicit buttons payload schema.");
+        Assert.IsNotNull(
+            buttonsPayload.GetField("rotation_adjust", BindingFlags.Instance | BindingFlags.Public),
+            "PC-side 9.3 Task 8 requires A / primaryButton as an explicit Grip+A rotation-adjust signal, not recenter overloading.");
+    }
+
+    [Test]
     public void ControlBootstrap_ExplicitQuestUdpTelemetryOnlyDisablesLocalWriters()
     {
         GameObject owner = new GameObject("udp-only-bootstrap-test");
