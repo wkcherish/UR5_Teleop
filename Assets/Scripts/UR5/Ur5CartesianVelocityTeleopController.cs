@@ -291,6 +291,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private Vector3 ur10StyleCommandPositionWorld;
     private Quaternion ur10StyleCommandRotationWorld = Quaternion.identity;
     private bool hasUr10StyleCommandPose;
+    private Quaternion ur10StyleLockedToolRotation = Quaternion.identity;
+    private bool hasUr10StyleLockedToolRotation;
+    private bool ur10StyleRotationAdjustActive;
+    private bool wasUr10StyleRotationAdjustActive;
     private float positionHandStillSeconds;
     private bool positionHandStopHoldActive;
     private Ur5TcpTargetFollower tcpFollower;
@@ -385,10 +389,19 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Vector3 BaseAngularVelocity => filteredBaseAngularVelocity;
     public RotationInputMode CurrentRotationInputMode => rotationInputMode;
     public bool IsOrientationLocked => rotationInputMode == RotationInputMode.Locked;
+    public bool IsUr10StyleRotationAdjustActive => UsesUr10StyleAnchoredPoseClutch
+        && IsPositionClutched
+        && ur10StyleRotationAdjustActive;
     /// <summary>右手 Grip 单独平移时是否已捕获完整 TCP 姿态锁。</summary>
-    public bool IsPositionOrientationLocked => hasPositionOrientationLock
+    public bool IsPositionOrientationLocked => IsLegacyPositionOrientationLocked
+        || IsUr10StyleGripOnlyOrientationLocked;
+    private bool IsLegacyPositionOrientationLocked => hasPositionOrientationLock
         && IsPositionClutched
         && !IsRotationClutched;
+    private bool IsUr10StyleGripOnlyOrientationLocked => UsesUr10StyleAnchoredPoseClutch
+        && IsPositionClutched
+        && !ur10StyleRotationAdjustActive
+        && hasUr10StyleLockedToolRotation;
     public bool IsRotationCommandActive => IsRotationClutched
         && (isSecondaryPoseRotationActive
             || !IsJoystickRotationMode()
@@ -786,21 +799,59 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             anchoredPoseTeleop.Pause();
             ResetUr10StyleHandStopHold();
             ResetUr10StyleCommandPoseGate();
+            hasUr10StyleLockedToolRotation = false;
+            ur10StyleRotationAdjustActive = false;
+            wasUr10StyleRotationAdjustActive = false;
         }
         else if (poseValid)
         {
-            UpdateUr10StyleCommandPose(rawPositionWorld, rawRotationWorld, !wasUr10StyleGripHeld);
+            bool rotationAdjustRequested = IsUr10StyleRotationAdjustmentRequested();
+            bool rotationAdjustStarted = rotationAdjustRequested && !wasUr10StyleRotationAdjustActive;
+            bool rotationAdjustEnded = !rotationAdjustRequested && wasUr10StyleRotationAdjustActive;
+            ur10StyleRotationAdjustActive = rotationAdjustRequested;
+
+            UpdateUr10StyleCommandPose(
+                rawPositionWorld,
+                rawRotationWorld,
+                !wasUr10StyleGripHeld || rotationAdjustStarted);
             if (!wasUr10StyleGripHeld && tcpPreviewTarget != null)
             {
+                Quaternion toolRotation = GetUr10StyleGripStartToolRotation();
                 anchoredPoseTeleop.Resume(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld,
                     GetActualToolPosition(),
-                    GetActualToolRotation());
+                    toolRotation);
+                ur10StyleLockedToolRotation = toolRotation;
+                hasUr10StyleLockedToolRotation = true;
                 ResetUr10StyleHandStopHold(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
             }
+            else if (rotationAdjustStarted && tcpPreviewTarget != null)
+            {
+                RebaseUr10StyleAtCommandPose(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+                ResetUr10StyleHandStopHold(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+            }
+            else if (rotationAdjustEnded && tcpPreviewTarget != null)
+            {
+                ur10StyleLockedToolRotation = tcpPreviewTarget.rotation;
+                hasUr10StyleLockedToolRotation = true;
+                persistentOrientationTarget = ur10StyleLockedToolRotation;
+                hasPersistentOrientationTarget = true;
+                RebaseUr10StyleAtCommandPose(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+                ResetUr10StyleHandStopHold(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+            }
+
+            wasUr10StyleRotationAdjustActive = rotationAdjustRequested;
         }
 
         IsPositionClutched = gripHeld && poseValid && anchoredPoseTeleop.IsTracking;
@@ -900,10 +951,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
+        Quaternion holdRotation = IsUr10StyleRotationLocked()
+            ? GetUr10StyleLockedToolRotation()
+            : tcpPreviewTarget.rotation;
         tcpFollower?.FreezeAtCurrentPose();
         Vector3 holdPosition = GetActualToolPosition();
-        Quaternion holdRotation = GetActualToolRotation();
         tcpPreviewTarget.SetPositionAndRotation(holdPosition, holdRotation);
+        ur10StyleLockedToolRotation = holdRotation;
+        hasUr10StyleLockedToolRotation = true;
         anchoredPoseTeleop.Rebase(
             rawPositionWorld,
             rawRotationWorld,
@@ -918,6 +973,66 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         IsPreviewLeadLimited = false;
         previewLinearVelocity = Vector3.zero;
         previewAngularVelocityDegrees = Vector3.zero;
+    }
+
+    private bool IsUr10StyleRotationLocked()
+    {
+        return !ur10StyleRotationAdjustActive;
+    }
+
+    private bool IsUr10StyleRotationAdjustmentRequested()
+    {
+        return ShouldAdjustUr10StyleRotation(
+            rotationInputMode,
+            positionDevice.isValid && ReadPrimaryButton(positionDevice),
+            secondaryButtonPressed: false);
+    }
+
+    public static bool ShouldAdjustUr10StyleRotation(
+        RotationInputMode mode,
+        bool primaryButtonPressed,
+        bool secondaryButtonPressed)
+    {
+        _ = secondaryButtonPressed;
+
+        if (mode == RotationInputMode.ControllerPoseDelta)
+        {
+            return true;
+        }
+
+        return mode == RotationInputMode.Locked && primaryButtonPressed;
+    }
+
+    private void RebaseUr10StyleAtCommandPose(Vector3 inputPositionWorld, Quaternion inputRotationWorld)
+    {
+        if (tcpPreviewTarget == null)
+        {
+            return;
+        }
+
+        anchoredPoseTeleop.Rebase(
+            inputPositionWorld,
+            inputRotationWorld,
+            tcpPreviewTarget.position,
+            tcpPreviewTarget.rotation);
+        relativePoseCommandFilter.Reset(tcpPreviewTarget.position, tcpPreviewTarget.rotation);
+    }
+
+    private Quaternion GetUr10StyleGripStartToolRotation()
+    {
+        if (IsUr10StyleRotationLocked() && hasPersistentOrientationTarget)
+        {
+            return persistentOrientationTarget;
+        }
+
+        return GetActualToolRotation();
+    }
+
+    private Quaternion GetUr10StyleLockedToolRotation()
+    {
+        return hasUr10StyleLockedToolRotation
+            ? ur10StyleLockedToolRotation
+            : GetUr10StyleGripStartToolRotation();
     }
 
     private void UpdateUr10StyleCommandPose(
@@ -1319,12 +1434,30 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
-        if (!anchoredPoseTeleop.TryGetRequestedPose(
-            ur10StyleCommandPositionWorld,
-            ur10StyleCommandRotationWorld,
-            GetUr10StylePositionMapping(),
-            out Vector3 requestedPosition,
-            out Quaternion requestedRotation))
+        Vector3 requestedPosition;
+        Quaternion requestedRotation;
+        bool hasRequestedPose;
+        if (IsUr10StyleRotationLocked())
+        {
+            hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                GetUr10StylePositionMapping(),
+                GetUr10StyleLockedToolRotation(),
+                out requestedPosition,
+                out requestedRotation);
+        }
+        else
+        {
+            hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                GetUr10StylePositionMapping(),
+                out requestedPosition,
+                out requestedRotation);
+        }
+
+        if (!hasRequestedPose)
         {
             anchoredPoseTeleop.Pause();
             return;
@@ -1332,11 +1465,15 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         LogicalCommandPosition = requestedPosition;
         LogicalCommandRotation = requestedRotation;
+        bool workspaceConstrained = false;
         if (clampPreviewWithWorkspaceLimiter && workspaceLimiter != null)
         {
-            requestedPosition = workspaceLimiter.ClampWorldPosition(requestedPosition);
+            Vector3 constrainedPosition = workspaceLimiter.ClampWorldPosition(requestedPosition);
+            workspaceConstrained = (constrainedPosition - requestedPosition).sqrMagnitude > 0.0000000001f;
+            requestedPosition = constrainedPosition;
         }
 
+        IsWorkspaceLimited = workspaceConstrained;
         requestedPosition = LimitPreviewLeadToActualTcp(requestedPosition);
 
         ConstrainedCommandPosition = requestedPosition;
@@ -1351,6 +1488,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
+        if (workspaceConstrained)
+        {
+            // A hard workspace projection must also consume the corresponding
+            // controller overtravel. Otherwise the user has to undo that
+            // overtravel before the TCP can move away from the boundary.
+            anchoredPoseTeleop.RebaseInputAnchorPreservingCommand(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                requestedPosition,
+                requestedRotation);
+        }
+
         FilteredCommandPosition = filteredPosition;
         FilteredCommandRotation = filteredRotation;
         tcpPreviewTarget.SetPositionAndRotation(filteredPosition, filteredRotation);
@@ -1359,6 +1508,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private Vector3 GetUr10StylePositionMapping()
     {
+        if (ur10StyleRotationAdjustActive)
+        {
+            // Grip+A is orientation-only. Controller wrist arcs must not drag
+            // the TCP position while the user is explicitly adjusting attitude.
+            return Vector3.zero;
+        }
+
         if (enableThreeModeController && IsPositionClutched)
         {
             return Vector3.one * GetActiveTeleopModeConfig().TranslationGain;
@@ -2512,6 +2668,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             && device.isValid
             && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool pressed)
             && pressed;
+    }
+
+    private bool ReadPrimaryButton(InputDevice device)
+    {
+        return device.isValid
+            && device.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryPressed)
+            && primaryPressed;
     }
 
     private bool ReadSecondaryButton(InputDevice device)

@@ -2482,13 +2482,13 @@ MonoBehaviour:
   enableCartesianVelocityTeleop: 1
   disablePoseIkWhenVelocityTeleopEnabled: 1
   addUrScriptSpeedlClient: 1
-  enforceFastQuestMotionProfile: 1
-  questTranslationScale: 2.6
-  questPreviewMaxLinearSpeed: 0.45
-  questMaximumPreviewLeadMeters: 0.035
-  questCommandMaxLinearSpeed: 0.18
-  questCommandMaxLinearAcceleration: 0.6
-  questMaxJointStepDegrees: 2.2
+  enforceFastQuestMotionProfile: 0
+  questTranslationScale: 1.5
+  questPreviewMaxLinearSpeed: 0.7
+  questMaximumPreviewLeadMeters: 0.075
+  questCommandMaxLinearSpeed: 0.26
+  questCommandMaxLinearAcceleration: 1.2
+  questMaxJointStepDegrees: 2.8
   showVirtualControllersInPassthrough: 0
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0

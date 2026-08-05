@@ -62,6 +62,33 @@ public sealed class Ur5AnchoredPoseTeleopStrategy
         return Resume(inputPosition, inputRotation, currentTargetPosition, currentTargetRotation);
     }
 
+    /// <summary>
+    /// Updates the relative-pose anchors while preserving the filtered command.
+    /// Workspace limits use this to discard hand overtravel at a boundary
+    /// without making the commanded TCP pose jump to the boundary.
+    /// </summary>
+    public bool RebaseInputAnchorPreservingCommand(
+        Vector3 inputPosition,
+        Quaternion inputRotation,
+        Vector3 constrainedToolPosition,
+        Quaternion constrainedToolRotation)
+    {
+        if (!IsFinite(inputPosition)
+            || !IsValidRotation(inputRotation)
+            || !IsFinite(constrainedToolPosition)
+            || !IsValidRotation(constrainedToolRotation))
+        {
+            return false;
+        }
+
+        inputAnchorPosition = inputPosition;
+        inputAnchorRotation = Normalize(inputRotation);
+        toolAnchorPosition = constrainedToolPosition;
+        toolAnchorRotation = Normalize(constrainedToolRotation);
+        IsTracking = true;
+        return true;
+    }
+
     public bool TryGetRequestedPose(
         Vector3 inputPosition,
         Quaternion inputRotation,

@@ -34,7 +34,7 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         csv = new StringBuilder();
         ResolveControlReferences();
         csv.Append("time,quest_device_valid,quest_clutched,target_pos_x,target_pos_y,target_pos_z,actual_pos_x,actual_pos_y,actual_pos_z,position_error_m,rotation_error_deg,target_rot_x,target_rot_y,target_rot_z,target_rot_w,j1_deg,j2_deg,j3_deg,j4_deg,j5_deg,j6_deg,trajectory_pending_waypoints,last_joint_assignment_time,grasp_assist_active,velocity_active,position_clutched,rotation_clutched,fine_control_active,rotation_input_mode,rotation_joystick_valid,rotation_joystick_x,rotation_joystick_y,joystick_roll_modifier,base_vx_mps,base_vy_mps,base_vz_mps,base_wx_radps,base_wy_radps,base_wz_radps,raw_base_vx_mps,raw_base_vy_mps,raw_base_vz_mps,raw_base_wx_radps,raw_base_wy_radps,raw_base_wz_radps,workspace_limited,input_pose_valid,real_output_enabled,speedl_connected,motion_armed,sent_vx_mps,sent_vy_mps,sent_vz_mps,sent_wx_radps,sent_wy_radps,sent_wz_radps,continuous_6dof_enabled,continuous_state,continuous_fault,controller_distance_m,controller_angle_deg,translation_gain,rotation_gain,logical_to_filtered_rotation_deg");
-        csv.AppendLine(",raw_hand_pos_x,raw_hand_pos_y,raw_hand_pos_z,raw_hand_rot_x,raw_hand_rot_y,raw_hand_rot_z,raw_hand_rot_w,logical_pos_x,logical_pos_y,logical_pos_z,logical_rot_x,logical_rot_y,logical_rot_z,logical_rot_w,constrained_pos_x,constrained_pos_y,constrained_pos_z,filtered_pos_x,filtered_pos_y,filtered_pos_z,filtered_rot_x,filtered_rot_y,filtered_rot_z,filtered_rot_w,actual_grasp_rot_x,actual_grasp_rot_y,actual_grasp_rot_z,actual_grasp_rot_w,target_stationary_s,settled_hold,dls_min_pivot,near_singularity,ik_failure_count,ik_lead_limited,j1_drive_deg,j2_drive_deg,j3_drive_deg,j4_drive_deg,j5_drive_deg,j6_drive_deg,j1_measured_deg,j2_measured_deg,j3_measured_deg,j4_measured_deg,j5_measured_deg,j6_measured_deg");
+        csv.AppendLine(",raw_hand_pos_x,raw_hand_pos_y,raw_hand_pos_z,raw_hand_rot_x,raw_hand_rot_y,raw_hand_rot_z,raw_hand_rot_w,logical_pos_x,logical_pos_y,logical_pos_z,logical_rot_x,logical_rot_y,logical_rot_z,logical_rot_w,constrained_pos_x,constrained_pos_y,constrained_pos_z,filtered_pos_x,filtered_pos_y,filtered_pos_z,filtered_rot_x,filtered_rot_y,filtered_rot_z,filtered_rot_w,actual_grasp_rot_x,actual_grasp_rot_y,actual_grasp_rot_z,actual_grasp_rot_w,target_stationary_s,settled_hold,dls_min_pivot,near_singularity,ik_failure_count,ik_lead_limited,j1_drive_deg,j2_drive_deg,j3_drive_deg,j4_drive_deg,j5_drive_deg,j6_drive_deg,j1_measured_deg,j2_measured_deg,j3_measured_deg,j4_measured_deg,j5_measured_deg,j6_measured_deg,ur10_rotation_adjust_active,position_orientation_locked,controller_position_gate_holding");
         outputPath = Path.Combine(Application.persistentDataPath, "ur5_pose_log.csv");
 
         if (recordOnStart || (autoRecordOnAndroid && ShouldAutoStartRecording(Application.platform)))
@@ -203,6 +203,9 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
         bool nearSingularity = tcpFollower != null && tcpFollower.IsNearSingularity;
         int ikFailureCount = tcpFollower != null ? tcpFollower.IkFailureCount : 0;
         bool ikLeadLimited = tcpFollower != null && tcpFollower.WasIkCommandLeadLimited;
+        bool ur10RotationAdjustActive = velocityTeleop != null && velocityTeleop.IsUr10StyleRotationAdjustActive;
+        bool positionOrientationLocked = velocityTeleop != null && velocityTeleop.IsPositionOrientationLocked;
+        bool controllerPositionGateHolding = velocityTeleop != null && velocityTeleop.IsControllerPositionNoiseGateHolding;
 
         if (velocityTeleop != null)
         {
@@ -308,6 +311,10 @@ public class Ur5PoseCsvRecorder : MonoBehaviour
                 : 0.0f;
             csv.Append(',').Append(Format(measuredJoint));
         }
+
+        csv.Append(',').Append(ur10RotationAdjustActive ? "1" : "0");
+        csv.Append(',').Append(positionOrientationLocked ? "1" : "0");
+        csv.Append(',').Append(controllerPositionGateHolding ? "1" : "0");
 
         csv.AppendLine();
     }

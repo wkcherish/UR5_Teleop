@@ -21,10 +21,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
     public bool addUrScriptSpeedlClient = true;
 
     [Header("Quest 平移速度配置")]
-    [Tooltip("为已有场景强制使用快速精密控制的最低速度配置。关闭后完全采用下方 Inspector 数值。")]
-    public bool enforceFastQuestMotionProfile = true;
+    [Tooltip("Compatibility switch for old scenes that need a minimum fast profile. Standard precision teleop keeps this off and uses the Inspector values exactly.")]
+    public bool enforceFastQuestMotionProfile = false;
     [Tooltip("右手位移映射到 TCP 的比例。增大后相同手部移动距离会产生更大的 TCP 位移。")]
-    [Range(0.5f, 4.5f)] public float questTranslationScale = 3.10f;
+    [Range(0.5f, 4.5f)] public float questTranslationScale = 1.50f;
     [Tooltip("Unity 中 TCP 预览的最高平移速度（米/秒）。这不改变真机 RTDE 安全限速。")]
     [Range(0.05f, 0.85f)] public float questPreviewMaxLinearSpeed = 0.70f;
     [Tooltip("TcpTarget 相对实际两指中心允许的最大超前距离（米）。较大值更灵敏，但视觉超前也更明显。")]
@@ -94,7 +94,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         bool useVelocityTeleop = enableCartesianVelocityTeleop;
-        if (enableKeyboardControl && tcpTarget != null && tcpTarget.GetComponent<TcpTargetKeyboardController>() == null)
+        if (!useVelocityTeleop
+            && enableKeyboardControl
+            && tcpTarget != null
+            && tcpTarget.GetComponent<TcpTargetKeyboardController>() == null)
         {
             tcpTarget.gameObject.AddComponent<TcpTargetKeyboardController>();
         }
@@ -306,7 +309,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.precisionAssemblyTargetChangeEpsilonDegrees = 0.04f;
         follower.precisionAssemblySettledPositionError = 0.0012f;
         follower.precisionAssemblySettledRotationErrorDegrees = 0.30f;
-        follower.suppressRotationOnlyIkDuringPositionControl = false;
+        follower.suppressRotationOnlyIkDuringPositionControl = true;
         follower.finishVelocityTargetAfterRelease = false;
         follower.snapTargetToActualPoseWhenQuestReleased = false;
         follower.velocityReleasePositionTolerance = 0.003f;
@@ -459,7 +462,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.usePositionGripAsDeadman = true;
         velocityTeleop.useRotationGripAsDeadman = true;
         velocityTeleop.unityPreviewMode = Ur5CartesianVelocityTeleopController.UnityPreviewMode.RelativePoseTarget;
-        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.ControllerPoseDelta;
+        velocityTeleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
         velocityTeleop.enableThreeModeController = false;
         velocityTeleop.useRightSecondaryButtonForInsertMode = false;
 
@@ -490,12 +493,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.fineRelativePoseCommandFilterRetention = 0.0f;
         velocityTeleop.previewMaxLinearSpeed = 0.0f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
-        // The UR10 reference target filter assumes high servo bandwidth. Unity
-        // IK can lag, so stop-hand hold explicitly freezes and re-anchors.
         velocityTeleop.limitPreviewLeadToActualTcp = false;
         velocityTeleop.maximumPreviewLeadMeters = 0.075f;
         velocityTeleop.useAccelerationLimitedPreviewTrajectory = false;
-        velocityTeleop.freezeRobotWhenPositionHandStops = true;
+        velocityTeleop.freezeRobotWhenPositionHandStops = false;
         velocityTeleop.controllerMotionEpsilonMeters = 0.0025f;
         velocityTeleop.controllerStopHoldSeconds = 0.10f;
         velocityTeleop.previewTargetDeadbandMeters = 0.0f;
