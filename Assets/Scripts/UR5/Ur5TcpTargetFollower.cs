@@ -77,6 +77,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
     public bool preferWristForOrientation = true;
     [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
+    [Header("Grip+A Wrist Priority")]
+    [Tooltip("During explicit Grip+A attitude control, reduce shoulder/elbow participation so the gripper turns mainly from the wrist.")]
+    public bool wristPriorityDuringRotationAdjust = true;
+    [Range(0.0f, 1.0f)] public float rotationAdjustProximalJointWeight = 0.02f;
+    [Range(0.0f, 1.0f)] public float rotationAdjustPositionTaskWeight = 0.15f;
+    [Tooltip("Extra DLS damping while Grip+A is active. Higher values reduce multi-joint swings at the cost of slower convergence.")]
+    public float rotationAdjustDlsDampingMultiplier = 1.60f;
     [Tooltip("Right-hand translation keeps the current tool attitude as a high-priority task. Higher values prevent the gripper from tilting when the base/shoulder moves.")]
     public float translationOrientationHoldWeight = 8.00f;
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
@@ -311,6 +318,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         maximumWristCommandLeadDegrees = Mathf.Max(0.0f, maximumWristCommandLeadDegrees);
         dlsDamping = Mathf.Max(0.0f, dlsDamping);
         dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
+        rotationAdjustProximalJointWeight = Mathf.Clamp01(rotationAdjustProximalJointWeight);
+        rotationAdjustPositionTaskWeight = Mathf.Clamp01(rotationAdjustPositionTaskWeight);
+        rotationAdjustDlsDampingMultiplier = Mathf.Max(1.0f, rotationAdjustDlsDampingMultiplier);
         translationOrientationHoldWeight = Mathf.Max(0.0f, translationOrientationHoldWeight);
         dlsGain = Mathf.Max(0.0f, dlsGain);
         stationaryDampingStartSeconds = Mathf.Max(0.0f, stationaryDampingStartSeconds);
@@ -1149,6 +1159,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         bool solvePosition = PositionError > GetActivePositionTolerance();
         bool isTranslationOrientationHold = IsTranslationOrientationHoldActive();
+        bool isExplicitRotationAdjust = IsExplicitRotationAdjustmentActive();
         bool solveRotation = allowRotationSolve
             && (isTranslationOrientationHold
                 || RotationErrorDegrees > GetActiveRotationToleranceDegrees());
@@ -1158,7 +1169,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         const int taskDimensions = 6;
-        float positionWeight = solvePosition ? 1.0f : 0.0f;
+        float positionWeight = solvePosition
+            ? GetDlsPositionTaskWeight(isExplicitRotationAdjust)
+            : 0.0f;
         float rotationWeight = solveRotation
             ? (isTranslationOrientationHold
                 ? Mathf.Max(dlsOrientationWeight, translationOrientationHoldWeight)
@@ -1173,15 +1186,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             ArticulationBody joint = jointController.Joints[i];
             Vector3 axis = GetJointAxisWorld(joint, i);
             Vector3 linearVelocity = Vector3.Cross(axis, controlPoint - joint.transform.position);
+            float jointColumnWeight = GetDlsJointColumnWeight(i, firstWristIndex, isExplicitRotationAdjust);
             float jointRotationWeight = preferWristForOrientation && i < firstWristIndex
                 ? Mathf.Clamp01(proximalOrientationWeight)
                 : 1.0f;
-            jacobian[0, i] = linearVelocity.x * positionWeight;
-            jacobian[1, i] = linearVelocity.y * positionWeight;
-            jacobian[2, i] = linearVelocity.z * positionWeight;
-            jacobian[3, i] = axis.x * rotationWeight * jointRotationWeight;
-            jacobian[4, i] = axis.y * rotationWeight * jointRotationWeight;
-            jacobian[5, i] = axis.z * rotationWeight * jointRotationWeight;
+            jacobian[0, i] = linearVelocity.x * positionWeight * jointColumnWeight;
+            jacobian[1, i] = linearVelocity.y * positionWeight * jointColumnWeight;
+            jacobian[2, i] = linearVelocity.z * positionWeight * jointColumnWeight;
+            jacobian[3, i] = axis.x * rotationWeight * jointRotationWeight * jointColumnWeight;
+            jacobian[4, i] = axis.y * rotationWeight * jointRotationWeight * jointColumnWeight;
+            jacobian[5, i] = axis.z * rotationWeight * jointRotationWeight * jointColumnWeight;
         }
 
         float[] taskError =
@@ -1194,7 +1208,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             rotationErrorRadians.z * rotationWeight
         };
         float[,] normalMatrix = new float[taskDimensions, taskDimensions];
-        float dampingSquared = dlsDamping * dlsDamping;
+        float dampingSquared = GetDlsDampingSquared(isExplicitRotationAdjust);
 
         for (int row = 0; row < taskDimensions; row++)
         {
@@ -1322,6 +1336,44 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     {
         return velocityTeleop != null
             && velocityTeleop.IsPositionOrientationLocked;
+    }
+
+    private bool IsExplicitRotationAdjustmentActive()
+    {
+        return wristPriorityDuringRotationAdjust
+            && velocityTeleop != null
+            && velocityTeleop.IsUr10StyleRotationAdjustActive;
+    }
+
+    private float GetDlsPositionTaskWeight(bool isExplicitRotationAdjust)
+    {
+        return isExplicitRotationAdjust
+            ? Mathf.Clamp01(rotationAdjustPositionTaskWeight)
+            : 1.0f;
+    }
+
+    private float GetDlsJointColumnWeight(
+        int jointIndex,
+        int firstWristIndex,
+        bool isExplicitRotationAdjust)
+    {
+        if (!isExplicitRotationAdjust || jointIndex >= firstWristIndex)
+        {
+            return 1.0f;
+        }
+
+        return Mathf.Clamp01(rotationAdjustProximalJointWeight);
+    }
+
+    private float GetDlsDampingSquared(bool isExplicitRotationAdjust)
+    {
+        float damping = Mathf.Max(0.0f, dlsDamping);
+        if (isExplicitRotationAdjust)
+        {
+            damping *= Mathf.Max(1.0f, rotationAdjustDlsDampingMultiplier);
+        }
+
+        return damping * damping;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)

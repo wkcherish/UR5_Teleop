@@ -110,6 +110,38 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
+    public void ControlBootstrap_DefaultFollowerUsesWristPriorityForGripARotationAdjust()
+    {
+        GameObject robot = new GameObject("follower-grip-a-wrist-priority-test");
+        try
+        {
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+
+            Ur5ControlBootstrap.ApplyDefaultFollowerProfile(follower);
+
+            Assert.IsTrue(
+                (bool)GetPublicFieldValue(follower, "wristPriorityDuringRotationAdjust"),
+                "Grip+A is explicit end-effector attitude control; the follower must bias the solve toward wrist joints instead of letting shoulder/elbow dominate.");
+            Assert.AreEqual(
+                0.02f,
+                (float)GetPublicFieldValue(follower, "rotationAdjustProximalJointWeight"),
+                0.000001f);
+            Assert.AreEqual(
+                0.15f,
+                (float)GetPublicFieldValue(follower, "rotationAdjustPositionTaskWeight"),
+                0.000001f);
+            Assert.AreEqual(
+                1.60f,
+                (float)GetPublicFieldValue(follower, "rotationAdjustDlsDampingMultiplier"),
+                0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(robot);
+        }
+    }
+
+    [Test]
     public void ControlBootstrap_StableJointDefaultsAllowResponsiveWristPoseTracking()
     {
         GameObject owner = new GameObject("joint-defaults-test");
@@ -1123,6 +1155,15 @@ public class Ur5Continuous6DofBootstrapTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.IsNotNull(field, fieldName + " should exist.");
         field.SetValue(target, value);
+    }
+
+    private static object GetPublicFieldValue(object target, string fieldName)
+    {
+        FieldInfo field = target.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.Public);
+        Assert.IsNotNull(field, fieldName + " should exist.");
+        return field.GetValue(target);
     }
 
     private static void SetUr10StyleLatestPose(

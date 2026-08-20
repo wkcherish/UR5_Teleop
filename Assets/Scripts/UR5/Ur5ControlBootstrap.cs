@@ -292,6 +292,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.translationOrientationHoldWeight = 8.00f;
         follower.dlsGain = 0.95f;
         follower.proximalOrientationWeight = 0.05f;
+        follower.wristPriorityDuringRotationAdjust = true;
+        follower.rotationAdjustProximalJointWeight = 0.02f;
+        follower.rotationAdjustPositionTaskWeight = 0.15f;
+        follower.rotationAdjustDlsDampingMultiplier = 1.60f;
         // The anchored teleop path already has its one upstream-style target
         // smoothing stage. Do not add a second low-pass to DLS joint deltas.
         follower.jointDeltaSmoothing = 0.00f;
