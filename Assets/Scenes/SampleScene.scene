@@ -2489,10 +2489,10 @@ MonoBehaviour:
   questCommandMaxLinearSpeed: 0.26
   questCommandMaxLinearAcceleration: 1.2
   questMaxJointStepDegrees: 2.8
-  showVirtualControllersInPassthrough: 0
+  showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0
-  questShadowReceiverHost: 192.168.10.37
+  questShadowReceiverHost: 192.168.10.96
   questShadowReceiverPort: 8080
   questShadowSendRateHz: 100
 --- !u!1 &218261879
