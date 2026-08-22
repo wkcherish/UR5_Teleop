@@ -171,6 +171,40 @@ public class Ur5JointCommandAntiWindupTests
     }
 
     [Test]
+    public void SetMeasuredStateTeleopTargets_WhenDirectServoEnabled_WritesJointStateAndDriveTarget()
+    {
+        controller.useDirectJointStateForMeasuredTeleop = true;
+        controller.measuredStateTeleopMaximumJointStepDegrees = 6.0f;
+
+        controller.SetMeasuredStateTeleopTargetsDegrees(
+            new[] { 4.0f },
+            1,
+            false,
+            true);
+
+        Assert.AreEqual(4.0f, joint.jointPosition[0] * Mathf.Rad2Deg, 0.0001f);
+        Assert.AreEqual(4.0f, controller.GetDriveTargetDegrees(0), 0.0001f);
+        Assert.AreEqual(4.0f, controller.GetAppliedJointTargetDegrees(0), 0.0001f);
+    }
+
+    [Test]
+    public void SetMeasuredStateTeleopTargets_WhenRequestedStepIsLarge_ClampsJointStateStep()
+    {
+        controller.useDirectJointStateForMeasuredTeleop = true;
+        controller.measuredStateTeleopMaximumJointStepDegrees = 5.0f;
+
+        controller.SetMeasuredStateTeleopTargetsDegrees(
+            new[] { 18.0f },
+            1,
+            false,
+            true);
+
+        Assert.AreEqual(5.0f, joint.jointPosition[0] * Mathf.Rad2Deg, 0.0001f);
+        Assert.AreEqual(5.0f, controller.GetDriveTargetDegrees(0), 0.0001f);
+        Assert.AreEqual(5.0f, controller.GetJointTargetDegrees(0), 0.0001f);
+    }
+
+    [Test]
     public void Ur10StyleGripStart_WhenOldWaypointExists_HoldsMeasuredJointPoseAndClearsQueue()
     {
         var target = new GameObject("anti-windup-tcp-target");

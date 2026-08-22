@@ -36,7 +36,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
     [Tooltip("线速度变化上限（米/秒²）。增大后起停更快，仍保留平滑滤波。")]
     [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.60f;
     [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
-    [Range(0.50f, 4.00f)] public float questMaxJointStepDegrees = 3.80f;
+    [Range(0.50f, 6.00f)] public float questMaxJointStepDegrees = 5.20f;
 
     public float EffectiveQuestTranslationScale => GetFastProfileMinimum(questTranslationScale, 3.10f);
     public float EffectiveQuestPreviewMaxLinearSpeed => GetFastProfileMinimum(questPreviewMaxLinearSpeed, 0.70f);
@@ -261,6 +261,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         jointController.maximumWristDriveTargetLeadDegrees = 6.0f;
         jointController.readyPoseMaximumDriveTargetLeadDegrees = 16.0f;
         jointController.readyPoseMaximumWristDriveTargetLeadDegrees = 6.0f;
+        jointController.useDirectJointStateForMeasuredTeleop = true;
+        jointController.measuredStateTeleopMaximumJointStepDegrees = 5.20f;
         jointController.ApplyConfiguredDriveSettings();
     }
 
@@ -280,8 +282,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.usePhysicalGraspFrameForOrientation = true;
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 3.80f;
-        follower.maxJointSpeedDegreesPerSecond = 3.80f * Ur5AutoSceneBootstrap.TeleopControlRateHz;
+        follower.maxJointStepDegrees = 5.20f;
+        follower.maxJointSpeedDegreesPerSecond = 5.20f * Ur5AutoSceneBootstrap.TeleopControlRateHz;
         follower.minimumJointDeltaDegrees = 0.015f;
         // Active Quest teleoperation solves from measured joints. The
         // ArticulationBody drive is the only physical lead guard in that path;

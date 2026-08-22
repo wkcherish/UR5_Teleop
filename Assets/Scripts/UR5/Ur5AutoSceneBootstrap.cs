@@ -115,6 +115,8 @@ public static class Ur5AutoSceneBootstrap
         if (controlBootstrap != null)
         {
             follower.maxJointStepDegrees = controlBootstrap.EffectiveQuestMaxJointStepDegrees;
+            follower.maxJointSpeedDegreesPerSecond = controlBootstrap.EffectiveQuestMaxJointStepDegrees
+                * TeleopControlRateHz;
         }
 
         Ur5ActualTcpMarker actualMarker = target.GetComponent<Ur5ActualTcpMarker>();

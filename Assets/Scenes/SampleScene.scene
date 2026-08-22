@@ -2489,7 +2489,7 @@ MonoBehaviour:
   questMovingPreviewLeadMeters: 0.16
   questCommandMaxLinearSpeed: 0.32
   questCommandMaxLinearAcceleration: 1.6
-  questMaxJointStepDegrees: 3.8
+  questMaxJointStepDegrees: 5.2
   showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0

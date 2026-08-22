@@ -1108,11 +1108,11 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             // let a previous trajectory waypoint arrive after this frame and
             // pull the arm back toward an obsolete target.
             trajectoryPlayer?.ClearQueue();
-            jointController.SetJointTargetsDegrees(
+            jointController.SetMeasuredStateTeleopTargetsDegrees(
                 workingJointTargetsDegrees,
                 workingJointCount,
                 clampToDriveLimits,
-                true);
+                ShouldUseDirectMeasuredStateTeleopServo());
             return;
         }
 
@@ -1127,6 +1127,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             workingJointCount,
             clampToDriveLimits,
             false);
+    }
+
+    private bool ShouldUseDirectMeasuredStateTeleopServo()
+    {
+        // Quest Build-and-Run uses the Unity articulation as a visual digital twin.
+        // When real UR output is enabled, joint state should come from robot feedback
+        // instead of local kinematic writes.
+        return velocityTeleop == null
+            || velocityTeleop.speedlClient == null
+            || !velocityTeleop.speedlClient.enableRealRobotOutput;
     }
 
     private void ClampWorkingJointTargetsToCommandLead()

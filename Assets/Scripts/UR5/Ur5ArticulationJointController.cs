@@ -43,6 +43,12 @@ public class Ur5ArticulationJointController : MonoBehaviour
     [Tooltip("Ready Pose 下腕部允许的最大受控领先量，仍小于肩、肘关节以避免腕部摆动。")]
     public float readyPoseMaximumWristDriveTargetLeadDegrees = 2.25f;
 
+    [Header("Measured-State Teleop Servo")]
+    [Tooltip("Quest dry-run teleop solves IK from measured joints. Writing that bounded result directly to the Unity articulation state removes the extra spring/lag layer in the visual digital twin.")]
+    public bool useDirectJointStateForMeasuredTeleop = true;
+    [Tooltip("Safety clamp for direct measured-state teleop joint writes, in degrees per FixedUpdate. This is separate from the normal Drive lead guard so stop/release holding can stay conservative.")]
+    public float measuredStateTeleopMaximumJointStepDegrees = 5.20f;
+
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;
     public bool disableGravityForDigitalTwin = true;
@@ -84,6 +90,7 @@ public class Ur5ArticulationJointController : MonoBehaviour
         maximumWristDriveTargetLeadDegrees = Mathf.Max(0.0f, maximumWristDriveTargetLeadDegrees);
         readyPoseMaximumDriveTargetLeadDegrees = Mathf.Max(0.0f, readyPoseMaximumDriveTargetLeadDegrees);
         readyPoseMaximumWristDriveTargetLeadDegrees = Mathf.Max(0.0f, readyPoseMaximumWristDriveTargetLeadDegrees);
+        measuredStateTeleopMaximumJointStepDegrees = Mathf.Max(0.0f, measuredStateTeleopMaximumJointStepDegrees);
     }
 
     private void Update()
@@ -246,6 +253,35 @@ public class Ur5ArticulationJointController : MonoBehaviour
         bool clampToDriveLimits,
         bool applyDirectlyToDrive)
     {
+        SetJointTargetsDegreesInternal(
+            targetDegrees,
+            targetCount,
+            clampToDriveLimits,
+            applyDirectlyToDrive,
+            false);
+    }
+
+    public void SetMeasuredStateTeleopTargetsDegrees(
+        IReadOnlyList<float> targetDegrees,
+        int targetCount,
+        bool clampToDriveLimits,
+        bool allowDirectJointStateServo)
+    {
+        SetJointTargetsDegreesInternal(
+            targetDegrees,
+            targetCount,
+            clampToDriveLimits,
+            true,
+            allowDirectJointStateServo && useDirectJointStateForMeasuredTeleop);
+    }
+
+    private void SetJointTargetsDegreesInternal(
+        IReadOnlyList<float> targetDegrees,
+        int targetCount,
+        bool clampToDriveLimits,
+        bool applyDirectlyToDrive,
+        bool applyDirectlyToJointState)
+    {
         if (targetDegrees == null)
         {
             return;
@@ -254,7 +290,13 @@ public class Ur5ArticulationJointController : MonoBehaviour
         int count = Mathf.Min(Mathf.Min(targetCount, targetDegrees.Count), jointTargets.Count);
         for (int i = 0; i < count; i++)
         {
-            jointTargets[i] = clampToDriveLimits ? ClampToDriveLimits(i, targetDegrees[i]) : targetDegrees[i];
+            float target = clampToDriveLimits ? ClampToDriveLimits(i, targetDegrees[i]) : targetDegrees[i];
+            if (applyDirectlyToJointState)
+            {
+                target = ClampMeasuredStateTeleopStep(i, target);
+            }
+
+            jointTargets[i] = target;
         }
 
         if (!applyDirectlyToDrive && smoothDriveTargets)
@@ -266,8 +308,66 @@ public class Ur5ArticulationJointController : MonoBehaviour
         {
             appliedJointTargets[i] = jointTargets[i];
             appliedJointVelocities[i] = 0.0f;
-            ApplyDriveTarget(i, jointTargets[i]);
+            if (applyDirectlyToJointState)
+            {
+                ApplyDirectJointStateTarget(i, jointTargets[i]);
+            }
+            else
+            {
+                ApplyDriveTarget(i, jointTargets[i]);
+            }
         }
+    }
+
+    private float ClampMeasuredStateTeleopStep(int index, float requestedTargetDegrees)
+    {
+        float maximumStep = Mathf.Max(0.0f, measuredStateTeleopMaximumJointStepDegrees);
+        if (maximumStep <= 0.0f)
+        {
+            return requestedTargetDegrees;
+        }
+
+        float measuredDegrees = GetMeasuredJointDegrees(index, requestedTargetDegrees);
+        return Mathf.Clamp(
+            requestedTargetDegrees,
+            measuredDegrees - maximumStep,
+            measuredDegrees + maximumStep);
+    }
+
+    private void ApplyDirectJointStateTarget(int index, float targetDegrees)
+    {
+        if (!TryApplyDirectJointState(index, targetDegrees))
+        {
+            ApplyDriveTarget(index, targetDegrees);
+            return;
+        }
+
+        ArticulationDrive drive = joints[index].xDrive;
+        drive.target = targetDegrees;
+        joints[index].xDrive = drive;
+        appliedJointTargets[index] = targetDegrees;
+    }
+
+    private bool TryApplyDirectJointState(int index, float targetDegrees)
+    {
+        if (index < 0 || index >= joints.Count)
+        {
+            return false;
+        }
+
+        ArticulationBody joint = joints[index];
+        if (joint.jointPosition.dofCount <= 0)
+        {
+            return false;
+        }
+
+        joint.jointPosition = new ArticulationReducedSpace(targetDegrees * Mathf.Deg2Rad);
+        if (joint.jointVelocity.dofCount > 0)
+        {
+            joint.jointVelocity = new ArticulationReducedSpace(0.0f);
+        }
+
+        return true;
     }
 
     public void AddJointTargetDegrees(int index, float deltaDegrees)

@@ -102,7 +102,7 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsTrue(follower.useMeasuredStateTeleopSolve);
             Assert.AreEqual(4.0f, follower.maximumCommandLeadDegrees, 0.000001f);
             Assert.AreEqual(8.0f, follower.maximumWristCommandLeadDegrees, 0.000001f);
-            Assert.AreEqual(3.80f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
+            Assert.AreEqual(5.20f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
         }
         finally
         {
@@ -157,6 +157,8 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsTrue(jointController.limitDriveTargetLeadFromMeasuredJoint);
             Assert.AreEqual(6.0f, jointController.maximumDriveTargetLeadDegrees, 0.000001f);
             Assert.AreEqual(6.0f, jointController.maximumWristDriveTargetLeadDegrees, 0.000001f);
+            Assert.IsTrue(jointController.useDirectJointStateForMeasuredTeleop);
+            Assert.AreEqual(5.20f, jointController.measuredStateTeleopMaximumJointStepDegrees, 0.000001f);
         }
         finally
         {
@@ -278,7 +280,7 @@ public class Ur5Continuous6DofBootstrapTests
         StringAssert.Contains("questMovingPreviewLeadMeters: 0.16", sceneText);
         StringAssert.Contains("questCommandMaxLinearSpeed: 0.32", sceneText);
         StringAssert.Contains("questCommandMaxLinearAcceleration: 1.6", sceneText);
-        StringAssert.Contains("questMaxJointStepDegrees: 3.8", sceneText);
+        StringAssert.Contains("questMaxJointStepDegrees: 5.2", sceneText);
     }
 
     [Test]
@@ -1284,7 +1286,9 @@ public class Ur5Continuous6DofBootstrapTests
                 + "j4_measured_deg,j5_measured_deg,j6_measured_deg,"
                 + "ur10_rotation_adjust_active,position_orientation_locked,"
                 + "controller_position_gate_holding,preview_lead_limited,"
-                + "active_preview_lead_limit_m,moving_preview_lead_active";
+                + "active_preview_lead_limit_m,moving_preview_lead_active,"
+                + "direct_joint_state_servo_enabled,direct_joint_state_servo_active,"
+                + "measured_teleop_max_joint_step_deg";
 
             Assert.That(lines[0], Does.EndWith(expectedTail));
             Assert.AreEqual(
