@@ -2483,12 +2483,13 @@ MonoBehaviour:
   disablePoseIkWhenVelocityTeleopEnabled: 1
   addUrScriptSpeedlClient: 1
   enforceFastQuestMotionProfile: 0
-  questTranslationScale: 1.5
+  questTranslationScale: 2.1
   questPreviewMaxLinearSpeed: 0.7
-  questMaximumPreviewLeadMeters: 0.075
-  questCommandMaxLinearSpeed: 0.26
-  questCommandMaxLinearAcceleration: 1.2
-  questMaxJointStepDegrees: 2.8
+  questMaximumPreviewLeadMeters: 0.04
+  questMovingPreviewLeadMeters: 0.16
+  questCommandMaxLinearSpeed: 0.32
+  questCommandMaxLinearAcceleration: 1.6
+  questMaxJointStepDegrees: 3.8
   showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0

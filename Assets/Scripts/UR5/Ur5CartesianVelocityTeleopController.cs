@@ -185,7 +185,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Header("Actual TCP Lead Limit")]
     [Tooltip("Prevents the IK command target from running far ahead of the real two-pad TCP when the hand moves faster than the arm can track.")]
     public bool limitPreviewLeadToActualTcp = true;
+    [Tooltip("Safety window used while the controller is stopped or being released. Keep this small so the arm cannot chase a stale target.")]
     public float maximumPreviewLeadMeters = 0.060f;
+    [Tooltip("Larger command lead used while Grip is held and stop-hold has not frozen the TCP. Stop-hold returns to maximumPreviewLeadMeters.")]
+    public float movingPreviewLeadMeters = 0.160f;
 
     [Header("Grip Hysteresis")]
     [Range(0.0f, 1.0f)] public float gripPressThreshold = 0.65f;
@@ -295,6 +298,9 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool hasUr10StyleLockedToolRotation;
     private bool ur10StyleRotationAdjustActive;
     private bool wasUr10StyleRotationAdjustActive;
+    private Quaternion ur10StyleRotationAdjustStartControllerRotation = Quaternion.identity;
+    private Quaternion ur10StyleRotationAdjustStartGraspWorldRotation = Quaternion.identity;
+    private bool hasUr10StyleRotationAdjustReference;
     private float positionHandStillSeconds;
     private bool positionHandStopHoldActive;
     private Ur5TcpTargetFollower tcpFollower;
@@ -324,6 +330,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public Quaternion FilteredCommandRotation { get; private set; } = Quaternion.identity;
     public Vector3 ConstrainedCommandPosition { get; private set; }
     public bool IsPreviewLeadLimited { get; private set; }
+    public float ActivePreviewLeadLimitMeters => GetActivePreviewLeadLimitMeters();
+    public bool IsResponsiveMovingPreviewLeadActive => UsesResponsiveMovingPreviewLead();
     public bool IsPrecisionModifierHeld { get; private set; }
     public Ur5TeleopMode ActiveTeleopMode => enableContinuous6DofClutch
         ? Ur5TeleopMode.Free
@@ -802,6 +810,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             hasUr10StyleLockedToolRotation = false;
             ur10StyleRotationAdjustActive = false;
             wasUr10StyleRotationAdjustActive = false;
+            hasUr10StyleRotationAdjustReference = false;
         }
         else if (poseValid)
         {
@@ -816,20 +825,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 !wasUr10StyleGripHeld || rotationAdjustStarted);
             if (!wasUr10StyleGripHeld && tcpPreviewTarget != null)
             {
+                tcpFollower?.HoldCurrentJointCommandsAtMeasuredPose();
+                Vector3 toolPosition = GetActualToolPosition();
                 Quaternion toolRotation = GetUr10StyleGripStartToolRotation();
                 anchoredPoseTeleop.Resume(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld,
-                    GetActualToolPosition(),
+                    toolPosition,
                     toolRotation);
+                SetUr10StylePreviewTargetImmediate(
+                    toolPosition,
+                    toolRotation,
+                    "QuestTeleopUr10StyleAnchoredPose");
                 ur10StyleLockedToolRotation = toolRotation;
                 hasUr10StyleLockedToolRotation = true;
+                hasUr10StyleRotationAdjustReference = false;
                 ResetUr10StyleHandStopHold(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
             }
             else if (rotationAdjustStarted && tcpPreviewTarget != null)
             {
+                CaptureUr10StyleRotationAdjustReference();
                 RebaseUr10StyleAtCommandPose(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
@@ -843,6 +860,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 hasUr10StyleLockedToolRotation = true;
                 persistentOrientationTarget = ur10StyleLockedToolRotation;
                 hasPersistentOrientationTarget = true;
+                hasUr10StyleRotationAdjustReference = false;
                 RebaseUr10StyleAtCommandPose(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
@@ -975,6 +993,30 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         previewAngularVelocityDegrees = Vector3.zero;
     }
 
+    private void SetUr10StylePreviewTargetImmediate(
+        Vector3 position,
+        Quaternion rotation,
+        string writeSource)
+    {
+        if (tcpPreviewTarget == null)
+        {
+            return;
+        }
+
+        tcpPreviewTarget.SetPositionAndRotation(position, rotation);
+        anchoredPoseTeleop.SetCommandPose(position, rotation);
+        relativePoseCommandFilter.Reset(position, rotation);
+        LogicalCommandPosition = position;
+        LogicalCommandRotation = rotation;
+        ConstrainedCommandPosition = position;
+        FilteredCommandPosition = position;
+        FilteredCommandRotation = rotation;
+        IsPreviewLeadLimited = false;
+        previewLinearVelocity = Vector3.zero;
+        previewAngularVelocityDegrees = Vector3.zero;
+        targetWriteMonitor?.RecordWrite(writeSource);
+    }
+
     private bool IsUr10StyleRotationLocked()
     {
         return !ur10StyleRotationAdjustActive;
@@ -1016,6 +1058,39 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             tcpPreviewTarget.position,
             tcpPreviewTarget.rotation);
         relativePoseCommandFilter.Reset(tcpPreviewTarget.position, tcpPreviewTarget.rotation);
+    }
+
+    private void CaptureUr10StyleRotationAdjustReference()
+    {
+        if (tcpPreviewTarget == null)
+        {
+            hasUr10StyleRotationAdjustReference = false;
+            return;
+        }
+
+        ur10StyleRotationAdjustStartControllerRotation = ur10StyleCommandRotationWorld;
+        ur10StyleRotationAdjustStartGraspWorldRotation = GetPreviewGraspRotation(tcpPreviewTarget.rotation);
+        hasUr10StyleRotationAdjustReference = true;
+    }
+
+    private Quaternion GetUr10StyleRotationAdjustToolRotation()
+    {
+        if (!hasUr10StyleRotationAdjustReference)
+        {
+            CaptureUr10StyleRotationAdjustReference();
+        }
+
+        if (!hasUr10StyleRotationAdjustReference)
+        {
+            return tcpPreviewTarget != null ? tcpPreviewTarget.rotation : Quaternion.identity;
+        }
+
+        float yawDegrees = CalculateHorizontalControllerTwistDegrees(
+            ur10StyleRotationAdjustStartControllerRotation,
+            ur10StyleCommandRotationWorld);
+        return BuildDownwardGraspYawRotation(
+            ur10StyleRotationAdjustStartGraspWorldRotation,
+            yawDegrees);
     }
 
     private Quaternion GetUr10StyleGripStartToolRotation()
@@ -1447,6 +1522,17 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 out requestedPosition,
                 out requestedRotation);
         }
+        else if (rotationInputMode == RotationInputMode.Locked)
+        {
+            Quaternion requestedToolRotation = GetUr10StyleRotationAdjustToolRotation();
+            hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                GetUr10StylePositionMapping(),
+                requestedToolRotation,
+                out requestedPosition,
+                out requestedRotation);
+        }
         else
         {
             hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
@@ -1475,6 +1561,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         IsWorkspaceLimited = workspaceConstrained;
         requestedPosition = LimitPreviewLeadToActualTcp(requestedPosition);
+        bool leadConstrained = IsPreviewLeadLimited;
 
         ConstrainedCommandPosition = requestedPosition;
         if (!anchoredPoseTeleop.FilterRequestedPose(
@@ -1488,11 +1575,13 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             return;
         }
 
-        if (workspaceConstrained)
+        if (workspaceConstrained || leadConstrained)
         {
             // A hard workspace projection must also consume the corresponding
-            // controller overtravel. Otherwise the user has to undo that
-            // overtravel before the TCP can move away from the boundary.
+            // controller overtravel. The same applies to the dynamic lead
+            // window: once the requested pose is projected near the actual TCP,
+            // the hand anchor must be updated so reverse motion responds
+            // immediately instead of first cancelling hidden backlog.
             anchoredPoseTeleop.RebaseInputAnchorPreservingCommand(
                 ur10StyleCommandPositionWorld,
                 ur10StyleCommandRotationWorld,
@@ -2256,7 +2345,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     {
         IsPreviewLeadLimited = false;
         if (!limitPreviewLeadToActualTcp
-            || maximumPreviewLeadMeters <= 0.0f
+            || Mathf.Max(maximumPreviewLeadMeters, movingPreviewLeadMeters) <= 0.0f
             || tcpFollower == null
             || !tcpFollower.enabled)
         {
@@ -2265,9 +2354,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         Vector3 actualTcpPosition = tcpFollower.ControlPointPosition;
         Vector3 lead = requestedPosition - actualTcpPosition;
-        float maximumLead = Mathf.Max(0.0f, maximumPreviewLeadMeters);
+        float maximumLead = GetActivePreviewLeadLimitMeters();
         IsPreviewLeadLimited = lead.sqrMagnitude > maximumLead * maximumLead;
         return actualTcpPosition + Vector3.ClampMagnitude(lead, maximumLead);
+    }
+
+    private float GetActivePreviewLeadLimitMeters()
+    {
+        float stopLead = Mathf.Max(0.0f, maximumPreviewLeadMeters);
+        if (!UsesResponsiveMovingPreviewLead())
+        {
+            return stopLead;
+        }
+
+        return Mathf.Max(stopLead, movingPreviewLeadMeters);
+    }
+
+    private bool UsesResponsiveMovingPreviewLead()
+    {
+        return UsesUr10StyleAnchoredPoseClutch
+            && IsPositionClutched
+            && !positionHandStopHoldActive
+            && movingPreviewLeadMeters > maximumPreviewLeadMeters;
     }
 
     private Vector3 GetActualToolPosition()
@@ -2845,6 +2953,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             0.0f,
             leftPrimarySnapRotationToleranceDegrees);
         maximumPreviewLeadMeters = Mathf.Max(0.0f, maximumPreviewLeadMeters);
+        movingPreviewLeadMeters = Mathf.Max(0.0f, movingPreviewLeadMeters);
         fineLinearSpeedMultiplier = Mathf.Clamp(fineLinearSpeedMultiplier, 0.1f, 1.0f);
         fineAngularSpeedMultiplier = Mathf.Clamp(fineAngularSpeedMultiplier, 0.1f, 1.0f);
         gripPressThreshold = Mathf.Clamp01(gripPressThreshold);

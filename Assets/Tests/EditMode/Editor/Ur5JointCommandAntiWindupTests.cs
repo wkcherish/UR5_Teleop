@@ -86,6 +86,189 @@ public class Ur5JointCommandAntiWindupTests
     }
 
     [Test]
+    public void BeginJointWaypoint_WhenMeasuredStateTeleopIsActive_SeedsFromMeasuredJoint()
+    {
+        ArticulationDrive drive = joint.xDrive;
+        drive.target = 6.0f;
+        joint.xDrive = drive;
+
+        var teleop = controllerOwner.AddComponent<Ur5CartesianVelocityTeleopController>();
+        SetNonPublicField(teleop, "<IsPositionClutched>k__BackingField", true);
+
+        var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+        follower.jointController = controller;
+        follower.velocityTeleop = teleop;
+        follower.useMeasuredStateTeleopSolve = true;
+
+        InvokeNonPublic(follower, "BeginJointWaypoint", 1);
+
+        float[] waypoint = GetPrivateField<float[]>(follower, "workingJointTargetsDegrees");
+        Assert.AreEqual(
+            0.0f,
+            waypoint[0],
+            0.0001f,
+            "Active teleoperation must solve from measured joint state, not a stale drive target that can create a lead/lag kick.");
+    }
+
+    [Test]
+    public void LimitMeasuredStateJointStep_ClampsEachRequestWithoutHistoricalDelta()
+    {
+        MethodInfo method = typeof(Ur5TcpTargetFollower).GetMethod(
+            "LimitMeasuredStateJointStep",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.IsNotNull(method, "Measured-state teleop must expose a deterministic per-step limiter.");
+
+        float first = (float)method.Invoke(null, new object[] { 8.0f, 2.0f });
+        float second = (float)method.Invoke(null, new object[] { 8.0f, 2.0f });
+        float reverse = (float)method.Invoke(null, new object[] { -8.0f, 2.0f });
+
+        Assert.AreEqual(2.0f, first, 0.0001f);
+        Assert.AreEqual(2.0f, second, 0.0001f);
+        Assert.AreEqual(-2.0f, reverse, 0.0001f);
+        Assert.GreaterOrEqual(first * second, 0.0f);
+        Assert.LessOrEqual(Mathf.Abs(reverse), 2.0f);
+    }
+
+    [Test]
+    public void CommitJointWaypoint_WhenMeasuredStateTeleopIsActive_BypassesStaleTrajectoryQueue()
+    {
+        var target = new GameObject("anti-windup-direct-target");
+        var endEffector = new GameObject("anti-windup-direct-tool0");
+        try
+        {
+            var teleop = controllerOwner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            SetNonPublicField(teleop, "<IsPositionClutched>k__BackingField", true);
+
+            var trajectoryPlayer = controllerOwner.AddComponent<Ur5JointTrajectoryPlayer>();
+            trajectoryPlayer.jointController = controller;
+            trajectoryPlayer.EnqueueWaypointDegrees(new[] { 40.0f }, 1);
+
+            var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+            follower.jointController = controller;
+            follower.velocityTeleop = teleop;
+            follower.trajectoryPlayer = trajectoryPlayer;
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+
+            InvokeNonPublic(follower, "BeginJointWaypoint", 1);
+            InvokeNonPublic(follower, "QueueJointDelta", 0, 1.0f);
+            InvokeNonPublic(follower, "CommitJointWaypoint");
+
+            Assert.IsFalse(
+                trajectoryPlayer.HasPendingWaypoint,
+                "Active teleoperation must not leave a stale trajectory waypoint to be applied after the current measured-state command.");
+            Assert.AreEqual(
+                1.0f,
+                controller.GetAppliedJointTargetDegrees(0),
+                0.0001f,
+                "Measured-state teleoperation must commit the current one-step target directly to the drive cache.");
+        }
+        finally
+        {
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(endEffector);
+        }
+    }
+
+    [Test]
+    public void Ur10StyleGripStart_WhenOldWaypointExists_HoldsMeasuredJointPoseAndClearsQueue()
+    {
+        var target = new GameObject("anti-windup-tcp-target");
+        var endEffector = new GameObject("anti-windup-tool0");
+        try
+        {
+            var trajectoryPlayer = controllerOwner.AddComponent<Ur5JointTrajectoryPlayer>();
+            trajectoryPlayer.jointController = controller;
+            trajectoryPlayer.EnqueueWaypointDegrees(new[] { 45.0f }, 1);
+
+            var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+            follower.jointController = controller;
+            follower.trajectoryPlayer = trajectoryPlayer;
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+
+            var teleop = controllerOwner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            SetNonPublicField(teleop, "tcpFollower", follower);
+
+            target.transform.SetPositionAndRotation(
+                new Vector3(0.40f, 0.50f, 0.60f),
+                Quaternion.identity);
+            endEffector.transform.SetPositionAndRotation(
+                new Vector3(0.30f, 0.20f, 0.10f),
+                Quaternion.identity);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+
+            Assert.AreEqual(0.0f, controller.GetJointTargetDegrees(0), 0.0001f);
+            Assert.AreEqual(0.0f, controller.GetAppliedJointTargetDegrees(0), 0.0001f);
+            Assert.IsFalse(
+                trajectoryPlayer.HasPendingWaypoint,
+                "Grip press must discard stale IK waypoints before the first held frame can chase them.");
+        }
+        finally
+        {
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(endEffector);
+        }
+    }
+
+    [Test]
+    public void StepTowardTarget_WhenTranslationLocksOrientation_UsesSingleDlsTask()
+    {
+        var target = new GameObject("anti-windup-dls-target");
+        var endEffector = new GameObject("anti-windup-dls-tool0");
+        try
+        {
+            var teleop = controllerOwner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            SetNonPublicField(teleop, "<IsPositionClutched>k__BackingField", true);
+            SetNonPublicField(teleop, "hasPositionOrientationLock", true);
+
+            var follower = controllerOwner.AddComponent<Ur5TcpTargetFollower>();
+            follower.jointController = controller;
+            follower.velocityTeleop = teleop;
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+            follower.usePhysicalGraspFrameForOrientation = false;
+            follower.followTargetRotation = true;
+
+            target.transform.SetPositionAndRotation(
+                new Vector3(0.20f, 0.10f, 0.00f),
+                Quaternion.Euler(0.0f, 15.0f, 0.0f));
+            endEffector.transform.SetPositionAndRotation(
+                Vector3.zero,
+                Quaternion.identity);
+
+            PropertyInfo property = typeof(Ur5TcpTargetFollower).GetProperty("LastIkTaskMode");
+            Assert.IsNotNull(
+                property,
+                "Follower diagnostics must expose which IK task path handled the current frame.");
+
+            InvokeNonPublic(follower, "StepTowardTarget");
+
+            Assert.AreEqual(
+                "LockedTranslationSingleDls",
+                property.GetValue(follower).ToString(),
+                "Grip-only translation with a locked gripper attitude must solve position and orientation in one DLS task, not by alternating CCD position and wrist-only correction.");
+        }
+        finally
+        {
+            Object.DestroyImmediate(target);
+            Object.DestroyImmediate(endEffector);
+        }
+    }
+
+    [Test]
     public void CommitJointWaypoint_WhenWaypointExceedsCommandLead_ClampsLogicalTargetToDriveTarget()
     {
         ArticulationDrive drive = joint.xDrive;
@@ -159,6 +342,15 @@ public class Ur5JointCommandAntiWindupTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.IsNotNull(field, fieldName + " should exist.");
         return (T)field.GetValue(target);
+    }
+
+    private static void SetNonPublicField(object target, string fieldName, object value)
+    {
+        FieldInfo field = target.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(field, fieldName + " should exist.");
+        field.SetValue(target, value);
     }
 
     private static void InvokeNonPublic(object target, string methodName, params object[] arguments)

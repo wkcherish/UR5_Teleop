@@ -31,8 +31,8 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.AreEqual(
                 Ur5CartesianVelocityTeleopController.RotationInputMode.Locked,
                 teleop.rotationInputMode);
-            Assert.AreEqual(0.22f, teleop.anchoredPoseSmoothingStep, 0.000001f);
-            Assert.AreEqual(0.22f, teleop.anchoredPosePrecisionSmoothingStep, 0.000001f);
+            Assert.AreEqual(0.70f, teleop.anchoredPoseSmoothingStep, 0.000001f);
+            Assert.AreEqual(0.70f, teleop.anchoredPosePrecisionSmoothingStep, 0.000001f);
             Assert.AreEqual(1.00f, teleop.relativePreviewPositionScale, 0.000001f);
             Assert.AreEqual(1.00f, teleop.normalPositionScale, 0.000001f);
             Assert.AreEqual(1.0f, teleop.relativePreviewRotationScale, 0.000001f);
@@ -52,10 +52,12 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.AreEqual(0.0f, teleop.previewTargetDeadbandMeters, 0.000001f);
             Assert.AreEqual(0.0f, teleop.finePreviewTargetDeadbandMeters, 0.000001f);
             Assert.IsFalse(teleop.useAccelerationLimitedPreviewTrajectory);
-            Assert.IsFalse(teleop.limitPreviewLeadToActualTcp);
-            Assert.IsFalse(teleop.freezeRobotWhenPositionHandStops);
+            Assert.IsTrue(teleop.limitPreviewLeadToActualTcp);
+            Assert.AreEqual(0.040f, teleop.maximumPreviewLeadMeters, 0.000001f);
+            Assert.AreEqual(0.160f, teleop.movingPreviewLeadMeters, 0.000001f);
+            Assert.IsTrue(teleop.freezeRobotWhenPositionHandStops);
             Assert.AreEqual(0.0025f, teleop.controllerMotionEpsilonMeters, 0.000001f);
-            Assert.AreEqual(0.10f, teleop.controllerStopHoldSeconds, 0.000001f);
+            Assert.AreEqual(0.04f, teleop.controllerStopHoldSeconds, 0.000001f);
             Assert.IsFalse(teleop.useRelativePoseCommandFilter);
             Assert.IsFalse(teleop.useProgressivePositionResponse);
 
@@ -73,7 +75,7 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void ControlBootstrap_DefaultFollowerDoesNotFreezeOrSwitchToPrecisionTrackingDuringGripHold()
+    public void ControlBootstrap_DefaultFollowerUsesMeasuredStateFastProfileDuringGripHold()
     {
         GameObject owner = new GameObject("follower-profile-test");
         GameObject robot = new GameObject("follower-profile-robot");
@@ -97,9 +99,10 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsFalse(follower.enablePrecisionAssemblyTracking);
             Assert.IsFalse(follower.holdJointPoseWhenTargetSettled);
             Assert.IsTrue(follower.suppressRotationOnlyIkDuringPositionControl);
+            Assert.IsTrue(follower.useMeasuredStateTeleopSolve);
             Assert.AreEqual(4.0f, follower.maximumCommandLeadDegrees, 0.000001f);
-            Assert.AreEqual(12.0f, follower.maximumWristCommandLeadDegrees, 0.000001f);
-            Assert.AreEqual(2.80f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
+            Assert.AreEqual(8.0f, follower.maximumWristCommandLeadDegrees, 0.000001f);
+            Assert.AreEqual(3.80f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
         }
         finally
         {
@@ -153,7 +156,7 @@ public class Ur5Continuous6DofBootstrapTests
 
             Assert.IsTrue(jointController.limitDriveTargetLeadFromMeasuredJoint);
             Assert.AreEqual(6.0f, jointController.maximumDriveTargetLeadDegrees, 0.000001f);
-            Assert.AreEqual(10.0f, jointController.maximumWristDriveTargetLeadDegrees, 0.000001f);
+            Assert.AreEqual(6.0f, jointController.maximumWristDriveTargetLeadDegrees, 0.000001f);
         }
         finally
         {
@@ -240,6 +243,45 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
+    public void ControlBootstrap_DefaultQuestSpeedProfileUsesResponsiveStableTranslation()
+    {
+        GameObject owner = new GameObject("quest-responsive-speed-profile-test");
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+
+            Ur5ControlBootstrap.ApplyDefaultQuestTeleopProfile(teleop);
+            bootstrap.ApplyQuestTeleopSpeedProfile(teleop);
+
+            Assert.AreEqual(2.10f, bootstrap.EffectiveQuestTranslationScale, 0.000001f);
+            Assert.AreEqual(2.10f, teleop.normalPositionScale, 0.000001f);
+            Assert.AreEqual(0.160f, bootstrap.EffectiveQuestMovingPreviewLeadMeters, 0.000001f);
+            Assert.AreEqual(0.160f, teleop.movingPreviewLeadMeters, 0.000001f);
+            Assert.AreEqual(0.32f, teleop.maxLinearSpeed, 0.000001f);
+            Assert.AreEqual(1.60f, teleop.maxLinearAcceleration, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
+    public void SampleScene_SerializesTheSameQuestSpeedProfileUsedByRuntimeBootstrap()
+    {
+        string scenePath = Path.Combine(Application.dataPath, "Scenes/SampleScene.scene");
+        string sceneText = File.ReadAllText(scenePath);
+
+        StringAssert.Contains("questTranslationScale: 2.1", sceneText);
+        StringAssert.Contains("questMaximumPreviewLeadMeters: 0.04", sceneText);
+        StringAssert.Contains("questMovingPreviewLeadMeters: 0.16", sceneText);
+        StringAssert.Contains("questCommandMaxLinearSpeed: 0.32", sceneText);
+        StringAssert.Contains("questCommandMaxLinearAcceleration: 1.6", sceneText);
+        StringAssert.Contains("questMaxJointStepDegrees: 3.8", sceneText);
+    }
+
+    [Test]
     public void Ur10StylePreview_WhenGripIsReleased_DoesNotWriteTheTcpTarget()
     {
         GameObject owner = new GameObject("ur10-style-release-test");
@@ -262,6 +304,162 @@ public class Ur5Continuous6DofBootstrapTests
         {
             UnityEngine.Object.DestroyImmediate(owner);
             UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_WhenHandTargetRunsAhead_ClampsCommandLeadToActualTcp()
+    {
+        GameObject owner = new GameObject("ur10-style-lead-clamp-test");
+        GameObject robot = new GameObject("ur10-style-lead-clamp-robot");
+        GameObject target = new GameObject("TcpTarget");
+        GameObject endEffector = new GameObject("tool0");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 2.10f;
+            teleop.limitPreviewLeadToActualTcp = true;
+            teleop.maximumPreviewLeadMeters = 0.040f;
+            teleop.movingPreviewLeadMeters = 0.040f;
+
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+            SetNonPublicField(teleop, "tcpFollower", follower);
+
+            Vector3 actualPosition = new Vector3(0.35f, 0.30f, 0.22f);
+            target.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+            endEffector.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.50f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Assert.LessOrEqual(
+                Vector3.Distance(actualPosition, target.transform.position),
+                0.0401f,
+                "Quest hand motion must not leave TcpTarget hundreds of millimetres ahead of the simulated arm; otherwise the arm keeps chasing after the hand stops.");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+            UnityEngine.Object.DestroyImmediate(endEffector);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_WhenHandIsMoving_UsesResponsiveMovingLeadWindow()
+    {
+        GameObject owner = new GameObject("ur10-style-moving-lead-test");
+        GameObject robot = new GameObject("ur10-style-moving-lead-robot");
+        GameObject target = new GameObject("TcpTarget");
+        GameObject endEffector = new GameObject("tool0");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 2.10f;
+            teleop.limitPreviewLeadToActualTcp = true;
+            teleop.maximumPreviewLeadMeters = 0.040f;
+            teleop.movingPreviewLeadMeters = 0.160f;
+            teleop.freezeRobotWhenPositionHandStops = true;
+            teleop.controllerMotionEpsilonMeters = 0.001f;
+
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+            SetNonPublicField(teleop, "tcpFollower", follower);
+
+            Vector3 actualPosition = new Vector3(0.35f, 0.30f, 0.22f);
+            target.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+            endEffector.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+
+            SetUr10StyleLatestPose(teleop, Vector3.zero, Quaternion.identity);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.50f, 0.0f, 0.0f), Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            float commandLead = Vector3.Distance(actualPosition, target.transform.position);
+            Assert.Greater(
+                commandLead,
+                0.120f,
+                "While the hand is intentionally moving, the preview target should not be squeezed into the stop-hold safety window; otherwise large hand motion produces only tiny robot motion.");
+            Assert.LessOrEqual(commandLead, 0.1601f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+            UnityEngine.Object.DestroyImmediate(endEffector);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_WhenStopHoldIsActive_ReturnsToSafetyLeadWindow()
+    {
+        GameObject owner = new GameObject("ur10-style-stop-hold-lead-test");
+        GameObject robot = new GameObject("ur10-style-stop-hold-lead-robot");
+        GameObject target = new GameObject("TcpTarget");
+        GameObject endEffector = new GameObject("tool0");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.normalPositionScale = 2.10f;
+            teleop.limitPreviewLeadToActualTcp = true;
+            teleop.maximumPreviewLeadMeters = 0.040f;
+            teleop.movingPreviewLeadMeters = 0.160f;
+
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+            SetNonPublicField(teleop, "tcpFollower", follower);
+
+            Vector3 actualPosition = new Vector3(0.35f, 0.30f, 0.22f);
+            target.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+            endEffector.transform.SetPositionAndRotation(actualPosition, Quaternion.identity);
+
+            SetUr10StyleLatestPose(teleop, Vector3.zero, Quaternion.identity);
+            SetNonPublicField(teleop, "positionHandStopHoldActive", true);
+            SetUr10StyleLatestPose(teleop, new Vector3(0.50f, 0.0f, 0.0f), Quaternion.identity);
+            SetNonPublicField(teleop, "positionHandStopHoldActive", true);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Assert.LessOrEqual(
+                Vector3.Distance(actualPosition, target.transform.position),
+                0.0401f,
+                "Once stop-hold is active, the stale target must collapse back to the safety lead window even if the hand remains displaced.");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+            UnityEngine.Object.DestroyImmediate(endEffector);
         }
     }
 
@@ -450,9 +648,9 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void Ur10StyleRotationAdjustment_ChangesGripperAttitudeWithoutTranslatingTcp()
+    public void Ur10StyleRotationAdjustment_LockedModeKeepsDownwardGraspWhileYawing()
     {
-        GameObject owner = new GameObject("ur10-style-rotation-only-test");
+        GameObject owner = new GameObject("ur10-style-downward-yaw-test");
         GameObject target = new GameObject("TcpTarget");
         try
         {
@@ -467,8 +665,9 @@ public class Ur5Continuous6DofBootstrapTests
             teleop.normalPositionScale = 0.50f;
 
             Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
-            Quaternion startRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
-            Quaternion controllerRotation = Quaternion.Euler(0.0f, 30.0f, 0.0f);
+            Quaternion startRotation = Quaternion.LookRotation(Vector3.down, Vector3.forward);
+            Quaternion controllerRotation = Quaternion.AngleAxis(-45.0f, Vector3.down)
+                * Quaternion.AngleAxis(35.0f, Vector3.right);
             target.transform.SetPositionAndRotation(startPosition, startRotation);
 
             SetUr10StyleLatestPose(teleop, Vector3.zero, Quaternion.identity);
@@ -476,25 +675,92 @@ public class Ur5Continuous6DofBootstrapTests
             InvokeNonPublic(
                 teleop,
                 "UpdateUr10StyleCommandPose",
+                Vector3.zero,
+                Quaternion.identity,
+                true);
+            InvokeNonPublic(teleop, "CaptureUr10StyleRotationAdjustReference");
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleCommandPose",
                 new Vector3(0.10f, 0.0f, 0.0f),
                 controllerRotation,
-                true);
+                false);
             InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
 
-            Quaternion expectedRotation = controllerRotation * startRotation;
             AssertVectorNear(
                 startPosition,
                 target.transform.position,
                 0.000001f);
             Assert.LessOrEqual(
-                Quaternion.Angle(expectedRotation, target.transform.rotation),
-                0.0001f,
-                "Grip+A is an orientation-only clutch: wrist arcs must not move the TCP position.");
+                Vector3.Angle(Vector3.down, target.transform.rotation * Vector3.forward),
+                0.001f,
+                "Locked Grip+A must keep the grasp approach vertical instead of copying controller pitch/roll into a backward lean.");
+
+            Vector3 startJawReference = Vector3.ProjectOnPlane(startRotation * Vector3.up, Vector3.down).normalized;
+            Vector3 adjustedJawReference = Vector3.ProjectOnPlane(target.transform.rotation * Vector3.up, Vector3.down).normalized;
+            Assert.Greater(
+                Vector3.Angle(startJawReference, adjustedJawReference),
+                5.0f,
+                "Locked Grip+A should still yaw the gripper around the downward grasp axis.");
         }
         finally
         {
             UnityEngine.Object.DestroyImmediate(owner);
             UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_GripStartImmediatelyReanchorsTcpTargetToActualTool()
+    {
+        GameObject owner = new GameObject("ur10-style-grip-start-reanchor-test");
+        GameObject robot = new GameObject("ur10-style-grip-start-reanchor-robot");
+        GameObject target = new GameObject("TcpTarget");
+        GameObject endEffector = new GameObject("tool0");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+
+            var follower = robot.AddComponent<Ur5TcpTargetFollower>();
+            follower.tcpTarget = target.transform;
+            follower.endEffector = endEffector.transform;
+            SetNonPublicField(teleop, "tcpFollower", follower);
+
+            Vector3 staleTargetPosition = new Vector3(0.52f, 0.42f, 0.28f);
+            Quaternion staleTargetRotation = Quaternion.Euler(30.0f, -20.0f, 10.0f);
+            Vector3 actualToolPosition = new Vector3(0.35f, 0.30f, 0.22f);
+            Quaternion actualToolRotation = Quaternion.Euler(5.0f, 15.0f, -25.0f);
+            target.transform.SetPositionAndRotation(staleTargetPosition, staleTargetRotation);
+            endEffector.transform.SetPositionAndRotation(actualToolPosition, actualToolRotation);
+
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                Vector3.zero,
+                true,
+                Quaternion.identity);
+
+            AssertVectorNear(
+                actualToolPosition,
+                target.transform.position,
+                0.000001f);
+            Assert.LessOrEqual(
+                Quaternion.Angle(actualToolRotation, target.transform.rotation),
+                0.0001f,
+                "Grip press must discard stale TcpTarget lead immediately, before the next IK frame can chase it.");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+            UnityEngine.Object.DestroyImmediate(endEffector);
         }
     }
 
@@ -708,11 +974,12 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void Ur10StyleFollowerRelease_DoesNotSnapTheFinalTcpTargetBackToActualPose()
+    public void Ur10StyleFollowerRelease_SnapsLedTcpTargetBackToActualPose()
     {
         GameObject owner = new GameObject("ur10-style-follower-release-test");
         GameObject robot = new GameObject("ur10-style-follower-release-robot");
         GameObject target = new GameObject("TcpTarget");
+        GameObject endEffector = new GameObject("tool0");
         try
         {
             var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
@@ -720,20 +987,24 @@ public class Ur5Continuous6DofBootstrapTests
             var follower = robot.AddComponent<Ur5TcpTargetFollower>();
             follower.velocityTeleop = teleop;
             follower.tcpTarget = target.transform;
-            Vector3 expectedPosition = new Vector3(0.40f, 0.50f, 0.60f);
-            Quaternion expectedRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
-            target.transform.SetPositionAndRotation(expectedPosition, expectedRotation);
+            follower.endEffector = endEffector.transform;
+            Vector3 ledTargetPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Vector3 actualPosition = new Vector3(0.35f, 0.30f, 0.22f);
+            Quaternion targetRotation = Quaternion.Euler(5.0f, 10.0f, 15.0f);
+            Quaternion actualRotation = Quaternion.Euler(-5.0f, 20.0f, 10.0f);
+            target.transform.SetPositionAndRotation(ledTargetPosition, targetRotation);
+            endEffector.transform.SetPositionAndRotation(actualPosition, actualRotation);
 
             InvokeNonPublic(follower, "BeginSafeRelease");
 
-            Assert.LessOrEqual(Vector3.Distance(expectedPosition, target.transform.position), 0.000001f);
-            Assert.LessOrEqual(Quaternion.Angle(expectedRotation, target.transform.rotation), 0.0001f);
+            AssertVectorNear(actualPosition, target.transform.position, 0.000001f);
         }
         finally
         {
             UnityEngine.Object.DestroyImmediate(owner);
             UnityEngine.Object.DestroyImmediate(robot);
             UnityEngine.Object.DestroyImmediate(target);
+            UnityEngine.Object.DestroyImmediate(endEffector);
         }
     }
 
@@ -1012,7 +1283,8 @@ public class Ur5Continuous6DofBootstrapTests
                 + "j1_measured_deg,j2_measured_deg,j3_measured_deg,"
                 + "j4_measured_deg,j5_measured_deg,j6_measured_deg,"
                 + "ur10_rotation_adjust_active,position_orientation_locked,"
-                + "controller_position_gate_holding";
+                + "controller_position_gate_holding,preview_lead_limited,"
+                + "active_preview_lead_limit_m,moving_preview_lead_active";
 
             Assert.That(lines[0], Does.EndWith(expectedTail));
             Assert.AreEqual(

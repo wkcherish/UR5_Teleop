@@ -24,21 +24,24 @@ public class Ur5ControlBootstrap : MonoBehaviour
     [Tooltip("Compatibility switch for old scenes that need a minimum fast profile. Standard precision teleop keeps this off and uses the Inspector values exactly.")]
     public bool enforceFastQuestMotionProfile = false;
     [Tooltip("右手位移映射到 TCP 的比例。增大后相同手部移动距离会产生更大的 TCP 位移。")]
-    [Range(0.5f, 4.5f)] public float questTranslationScale = 1.50f;
+    [Range(0.5f, 4.5f)] public float questTranslationScale = 2.10f;
     [Tooltip("Unity 中 TCP 预览的最高平移速度（米/秒）。这不改变真机 RTDE 安全限速。")]
     [Range(0.05f, 0.85f)] public float questPreviewMaxLinearSpeed = 0.70f;
     [Tooltip("TcpTarget 相对实际两指中心允许的最大超前距离（米）。较大值更灵敏，但视觉超前也更明显。")]
-    [Range(0.01f, 0.10f)] public float questMaximumPreviewLeadMeters = 0.075f;
+    [Range(0.01f, 0.10f)] public float questMaximumPreviewLeadMeters = 0.040f;
+    [Tooltip("右手确实在移动时允许的临时 TcpTarget 超前距离（米）。停手后仍回到 questMaximumPreviewLeadMeters。")]
+    [Range(0.04f, 0.30f)] public float questMovingPreviewLeadMeters = 0.160f;
     [Tooltip("仅用于 Unity speedl 影子命令的线速度上限（米/秒）；真机实际限速由 Fedora 端安全配置决定。")]
-    [Range(0.05f, 0.50f)] public float questCommandMaxLinearSpeed = 0.26f;
+    [Range(0.05f, 0.50f)] public float questCommandMaxLinearSpeed = 0.32f;
     [Tooltip("线速度变化上限（米/秒²）。增大后起停更快，仍保留平滑滤波。")]
-    [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.20f;
+    [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.60f;
     [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
-    [Range(0.50f, 4.00f)] public float questMaxJointStepDegrees = 2.80f;
+    [Range(0.50f, 4.00f)] public float questMaxJointStepDegrees = 3.80f;
 
     public float EffectiveQuestTranslationScale => GetFastProfileMinimum(questTranslationScale, 3.10f);
     public float EffectiveQuestPreviewMaxLinearSpeed => GetFastProfileMinimum(questPreviewMaxLinearSpeed, 0.70f);
     public float EffectiveQuestMaximumPreviewLeadMeters => GetFastProfileMinimum(questMaximumPreviewLeadMeters, 0.075f);
+    public float EffectiveQuestMovingPreviewLeadMeters => GetFastProfileMinimum(questMovingPreviewLeadMeters, 0.160f);
     public float EffectiveQuestCommandMaxLinearSpeed => GetFastProfileMinimum(questCommandMaxLinearSpeed, 0.26f);
     public float EffectiveQuestCommandMaxLinearAcceleration => GetFastProfileMinimum(questCommandMaxLinearAcceleration, 1.20f);
     public float EffectiveQuestMaxJointStepDegrees => GetFastProfileMinimum(questMaxJointStepDegrees, 2.80f);
@@ -255,9 +258,9 @@ public class Ur5ControlBootstrap : MonoBehaviour
         // 仍以实际关节反馈限制命令领先量；适当放宽受控窗口，避免四层限幅
         // 叠加后出现“推一下才走、走一下又停”的卡顿感。
         jointController.maximumDriveTargetLeadDegrees = 6.0f;
-        jointController.maximumWristDriveTargetLeadDegrees = 10.0f;
+        jointController.maximumWristDriveTargetLeadDegrees = 6.0f;
         jointController.readyPoseMaximumDriveTargetLeadDegrees = 16.0f;
-        jointController.readyPoseMaximumWristDriveTargetLeadDegrees = 7.0f;
+        jointController.readyPoseMaximumWristDriveTargetLeadDegrees = 6.0f;
         jointController.ApplyConfiguredDriveSettings();
     }
 
@@ -277,14 +280,15 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.usePhysicalGraspFrameForOrientation = true;
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 2.80f;
-        follower.maxJointSpeedDegreesPerSecond = 252.0f;
+        follower.maxJointStepDegrees = 3.80f;
+        follower.maxJointSpeedDegreesPerSecond = 3.80f * Ur5AutoSceneBootstrap.TeleopControlRateHz;
         follower.minimumJointDeltaDegrees = 0.015f;
-        // Keep the logical IK target near the drive target so DLS cannot
-        // accumulate hundreds of degrees while the physical drive lead guard
-        // is correctly limiting the ArticulationBody target.
+        // Active Quest teleoperation solves from measured joints. The
+        // ArticulationBody drive is the only physical lead guard in that path;
+        // these windows remain available for scripted/legacy follower users.
+        follower.useMeasuredStateTeleopSolve = true;
         follower.maximumCommandLeadDegrees = 4.00f;
-        follower.maximumWristCommandLeadDegrees = 12.00f;
+        follower.maximumWristCommandLeadDegrees = 8.00f;
         follower.useTimedJointAssignments = true;
         follower.jointAssignmentIntervalSeconds = 0.0f;
         follower.dlsDamping = 0.16f;
@@ -490,19 +494,20 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.previewPositionSmoothingSharpness = 26.0f;
         velocityTeleop.previewRotationSmoothingSharpness = 18.0f;
         velocityTeleop.useAnchoredPoseTeleopStrategy = true;
-        velocityTeleop.anchoredPoseSmoothingStep = 0.22f;
-        velocityTeleop.anchoredPosePrecisionSmoothingStep = 0.22f;
+        velocityTeleop.anchoredPoseSmoothingStep = 0.70f;
+        velocityTeleop.anchoredPosePrecisionSmoothingStep = 0.70f;
         velocityTeleop.useRelativePoseCommandFilter = false;
         velocityTeleop.relativePoseCommandFilterRetention = 0.0f;
         velocityTeleop.fineRelativePoseCommandFilterRetention = 0.0f;
         velocityTeleop.previewMaxLinearSpeed = 0.0f;
         velocityTeleop.previewMaxAngularSpeedDegreesPerSecond = 420.0f;
-        velocityTeleop.limitPreviewLeadToActualTcp = false;
-        velocityTeleop.maximumPreviewLeadMeters = 0.075f;
+        velocityTeleop.limitPreviewLeadToActualTcp = true;
+        velocityTeleop.maximumPreviewLeadMeters = 0.040f;
+        velocityTeleop.movingPreviewLeadMeters = 0.160f;
         velocityTeleop.useAccelerationLimitedPreviewTrajectory = false;
-        velocityTeleop.freezeRobotWhenPositionHandStops = false;
+        velocityTeleop.freezeRobotWhenPositionHandStops = true;
         velocityTeleop.controllerMotionEpsilonMeters = 0.0025f;
-        velocityTeleop.controllerStopHoldSeconds = 0.10f;
+        velocityTeleop.controllerStopHoldSeconds = 0.04f;
         velocityTeleop.previewTargetDeadbandMeters = 0.0f;
         velocityTeleop.finePreviewTargetDeadbandMeters = 0.0f;
 
@@ -537,8 +542,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.leftPrimarySnapRotationToleranceDegrees = 0.50f;
         velocityTeleop.enableLeftSecondaryOrientationHold = false;
         velocityTeleop.linearSpeedGain = 1.20f;
-        velocityTeleop.maxLinearSpeed = 0.26f;
-        velocityTeleop.maxLinearAcceleration = 1.20f;
+        velocityTeleop.maxLinearSpeed = 0.32f;
+        velocityTeleop.maxLinearAcceleration = 1.60f;
         velocityTeleop.angularSpeedGain = 1.30f;
         velocityTeleop.maxAngularSpeedRadiansPerSecond = 4.00f;
         velocityTeleop.maxAngularAcceleration = 10.00f;
@@ -559,6 +564,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.normalPositionScale = EffectiveQuestTranslationScale;
         velocityTeleop.previewMaxLinearSpeed = EffectiveQuestPreviewMaxLinearSpeed;
         velocityTeleop.maximumPreviewLeadMeters = EffectiveQuestMaximumPreviewLeadMeters;
+        velocityTeleop.movingPreviewLeadMeters = EffectiveQuestMovingPreviewLeadMeters;
         velocityTeleop.linearSpeedGain = 1.20f;
         velocityTeleop.maxLinearSpeed = EffectiveQuestCommandMaxLinearSpeed;
         velocityTeleop.maxLinearAcceleration = EffectiveQuestCommandMaxLinearAcceleration;
