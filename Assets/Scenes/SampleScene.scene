@@ -2490,6 +2490,7 @@ MonoBehaviour:
   questCommandMaxLinearSpeed: 0.32
   questCommandMaxLinearAcceleration: 1.6
   questMaxJointStepDegrees: 3.85
+  workspaceMinimumLocalHeightMeters: 0.015
   realRobotMaxLinearSpeed: 0.035
   realRobotMaxAngularSpeedRadiansPerSecond: 0.25
   realRobotCommandAcceleration: 0.12

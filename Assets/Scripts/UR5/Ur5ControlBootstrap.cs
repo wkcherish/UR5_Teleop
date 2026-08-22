@@ -2,6 +2,8 @@ using UnityEngine;
 
 public class Ur5ControlBootstrap : MonoBehaviour
 {
+    public const float DefaultWorkspaceMinimumLocalHeightMeters = 0.015f;
+
     private static Ur5ControlBootstrap runtimeOwner;
     private bool hasConfiguredRuntime;
     [Header("Scene References")]
@@ -37,6 +39,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
     [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.60f;
     [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
     [Range(0.50f, 6.00f)] public float questMaxJointStepDegrees = 3.85f;
+
+    [Header("TCP 工作空间安全")]
+    [Tooltip("TCP 目标在 UR5 基座/桌面局部坐标中的最低高度。保持略高于 0，允许低位抓取但避免目标穿到地面以下。")]
+    [Range(0.0f, 0.10f)] public float workspaceMinimumLocalHeightMeters = DefaultWorkspaceMinimumLocalHeightMeters;
 
     [Header("真实机械臂 speedl 安全限速")]
     [Tooltip("真实 UR speedl 输出的线速度上限，独立于 Quest/Unity dry-run 的视觉跟随速度。首次上真机建议保持保守。")]
@@ -216,10 +222,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         workspaceLimiter.constrainInLateUpdate = false;
         // Keep a small clearance above the calibrated base/ground plane while
         // still allowing the Robotiq pads to reach low tabletop targets.
-        workspaceLimiter.minimumLocalPosition = new Vector3(
-            workspaceLimiter.minimumLocalPosition.x,
-            0.05f,
-            workspaceLimiter.minimumLocalPosition.z);
+        ApplyWorkspaceSafetyProfile(workspaceLimiter);
 
         TcpTargetCollisionGuard collisionGuard = tcpTarget.GetComponent<TcpTargetCollisionGuard>();
         if (collisionGuard == null)
@@ -604,6 +607,20 @@ public class Ur5ControlBootstrap : MonoBehaviour
         speedlClient.maxOutputLinearAcceleration = Mathf.Max(0.0f, realRobotMaxOutputLinearAcceleration);
         speedlClient.maxOutputAngularAcceleration = Mathf.Max(0.0f, realRobotMaxOutputAngularAcceleration);
         speedlClient.sendStoplOnStop = true;
+    }
+
+    public void ApplyWorkspaceSafetyProfile(TcpTargetWorkspaceLimiter workspaceLimiter)
+    {
+        if (workspaceLimiter == null)
+        {
+            return;
+        }
+
+        float minimumHeight = Mathf.Max(0.0f, workspaceMinimumLocalHeightMeters);
+        workspaceLimiter.minimumLocalPosition = new Vector3(
+            workspaceLimiter.minimumLocalPosition.x,
+            minimumHeight,
+            workspaceLimiter.minimumLocalPosition.z);
     }
 
     private float GetFastProfileMinimum(float configuredValue, float fastProfileMinimum)

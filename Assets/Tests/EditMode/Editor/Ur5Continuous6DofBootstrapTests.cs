@@ -113,6 +113,40 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
+    public void ControlBootstrap_DefaultWorkspaceAllowsLowTabletopTcpWithoutGoingBelowGround()
+    {
+        GameObject owner = new GameObject("workspace-floor-profile-test");
+        GameObject robot = new GameObject("workspace-floor-profile-robot");
+        GameObject target = new GameObject("TcpTarget");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.robotRoot = robot.transform;
+            bootstrap.tcpTarget = target.transform;
+            bootstrap.enableCartesianVelocityTeleop = true;
+            bootstrap.enableTcpTargetFollower = false;
+            bootstrap.enableQuest3Control = false;
+            bootstrap.enableKeyboardControl = false;
+            bootstrap.addUrScriptSpeedlClient = false;
+
+            InvokeNonPublic(bootstrap, "Awake");
+
+            var limiter = target.GetComponent<TcpTargetWorkspaceLimiter>();
+            Assert.IsNotNull(limiter);
+            Assert.AreEqual(0.015f, limiter.minimumLocalPosition.y, 0.000001f);
+            Assert.GreaterOrEqual(limiter.minimumLocalPosition.y, 0.0f);
+            Assert.AreEqual(0.015f, bootstrap.workspaceMinimumLocalHeightMeters, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
     public void ControlBootstrap_DefaultFollowerUsesWristPriorityForGripARotationAdjust()
     {
         GameObject robot = new GameObject("follower-grip-a-wrist-priority-test");
@@ -281,6 +315,7 @@ public class Ur5Continuous6DofBootstrapTests
         StringAssert.Contains("questCommandMaxLinearSpeed: 0.32", sceneText);
         StringAssert.Contains("questCommandMaxLinearAcceleration: 1.6", sceneText);
         StringAssert.Contains("questMaxJointStepDegrees: 3.85", sceneText);
+        StringAssert.Contains("workspaceMinimumLocalHeightMeters: 0.015", sceneText);
         StringAssert.Contains("realRobotMaxLinearSpeed: 0.035", sceneText);
         StringAssert.Contains("realRobotMaxAngularSpeedRadiansPerSecond: 0.25", sceneText);
         StringAssert.Contains("realRobotCommandAcceleration: 0.12", sceneText);
