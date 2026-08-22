@@ -166,6 +166,7 @@ public static class Ur5AutoSceneBootstrap
                 speedlClient = bootstrap.gameObject.AddComponent<Ur5UrScriptSpeedlClient>();
             }
 
+            bootstrap.ApplyRealRobotSpeedlSafetyProfile(speedlClient);
             velocityTeleop.speedlClient = speedlClient;
         }
 

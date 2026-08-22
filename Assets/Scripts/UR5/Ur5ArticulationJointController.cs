@@ -47,7 +47,7 @@ public class Ur5ArticulationJointController : MonoBehaviour
     [Tooltip("Quest dry-run teleop solves IK from measured joints. Writing that bounded result directly to the Unity articulation state removes the extra spring/lag layer in the visual digital twin.")]
     public bool useDirectJointStateForMeasuredTeleop = true;
     [Tooltip("Safety clamp for direct measured-state teleop joint writes, in degrees per FixedUpdate. This is separate from the normal Drive lead guard so stop/release holding can stay conservative.")]
-    public float measuredStateTeleopMaximumJointStepDegrees = 5.20f;
+    public float measuredStateTeleopMaximumJointStepDegrees = 3.85f;
 
     [Header("Digital Twin Physics")]
     public bool fixBaseOnStart = true;

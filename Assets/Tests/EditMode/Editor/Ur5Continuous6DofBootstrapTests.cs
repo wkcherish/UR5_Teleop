@@ -102,7 +102,7 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsTrue(follower.useMeasuredStateTeleopSolve);
             Assert.AreEqual(4.0f, follower.maximumCommandLeadDegrees, 0.000001f);
             Assert.AreEqual(8.0f, follower.maximumWristCommandLeadDegrees, 0.000001f);
-            Assert.AreEqual(5.20f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
+            Assert.AreEqual(3.85f * Ur5AutoSceneBootstrap.TeleopControlRateHz, follower.maxJointSpeedDegreesPerSecond, 0.000001f);
         }
         finally
         {
@@ -158,7 +158,7 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.AreEqual(6.0f, jointController.maximumDriveTargetLeadDegrees, 0.000001f);
             Assert.AreEqual(6.0f, jointController.maximumWristDriveTargetLeadDegrees, 0.000001f);
             Assert.IsTrue(jointController.useDirectJointStateForMeasuredTeleop);
-            Assert.AreEqual(5.20f, jointController.measuredStateTeleopMaximumJointStepDegrees, 0.000001f);
+            Assert.AreEqual(3.85f, jointController.measuredStateTeleopMaximumJointStepDegrees, 0.000001f);
         }
         finally
         {
@@ -280,7 +280,52 @@ public class Ur5Continuous6DofBootstrapTests
         StringAssert.Contains("questMovingPreviewLeadMeters: 0.16", sceneText);
         StringAssert.Contains("questCommandMaxLinearSpeed: 0.32", sceneText);
         StringAssert.Contains("questCommandMaxLinearAcceleration: 1.6", sceneText);
-        StringAssert.Contains("questMaxJointStepDegrees: 5.2", sceneText);
+        StringAssert.Contains("questMaxJointStepDegrees: 3.85", sceneText);
+        StringAssert.Contains("realRobotMaxLinearSpeed: 0.035", sceneText);
+        StringAssert.Contains("realRobotMaxAngularSpeedRadiansPerSecond: 0.25", sceneText);
+        StringAssert.Contains("realRobotCommandAcceleration: 0.12", sceneText);
+        StringAssert.Contains("realRobotStopAcceleration: 0.35", sceneText);
+        StringAssert.Contains("realRobotMaxOutputLinearAcceleration: 0.1", sceneText);
+        StringAssert.Contains("realRobotMaxOutputAngularAcceleration: 0.7", sceneText);
+    }
+
+    [Test]
+    public void ControlBootstrap_RealRobotSpeedlSafetyProfileIsIndependentFromQuestPreviewSpeed()
+    {
+        GameObject owner = new GameObject("real-speedl-safety-profile-test");
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.questCommandMaxLinearSpeed = 0.32f;
+            bootstrap.realRobotMaxLinearSpeed = 0.035f;
+            bootstrap.realRobotMaxAngularSpeedRadiansPerSecond = 0.25f;
+            bootstrap.realRobotCommandAcceleration = 0.12f;
+            bootstrap.realRobotStopAcceleration = 0.35f;
+            bootstrap.realRobotMaxOutputLinearAcceleration = 0.10f;
+            bootstrap.realRobotMaxOutputAngularAcceleration = 0.70f;
+
+            var speedlClient = owner.AddComponent<Ur5UrScriptSpeedlClient>();
+            speedlClient.maxLinearSpeed = 0.50f;
+            speedlClient.maxAngularSpeedRadiansPerSecond = 2.00f;
+            speedlClient.armOnStart = true;
+
+            bootstrap.ApplyRealRobotSpeedlSafetyProfile(speedlClient);
+
+            Assert.IsTrue(speedlClient.requireMotionArmed);
+            Assert.IsFalse(speedlClient.armOnStart);
+            Assert.AreEqual(0.035f, speedlClient.maxLinearSpeed, 0.000001f);
+            Assert.AreEqual(0.25f, speedlClient.maxAngularSpeedRadiansPerSecond, 0.000001f);
+            Assert.AreEqual(0.12f, speedlClient.acceleration, 0.000001f);
+            Assert.AreEqual(0.35f, speedlClient.stopAcceleration, 0.000001f);
+            Assert.IsTrue(speedlClient.limitOutputAcceleration);
+            Assert.AreEqual(0.10f, speedlClient.maxOutputLinearAcceleration, 0.000001f);
+            Assert.AreEqual(0.70f, speedlClient.maxOutputAngularAcceleration, 0.000001f);
+            Assert.IsTrue(speedlClient.sendStoplOnStop);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
     }
 
     [Test]

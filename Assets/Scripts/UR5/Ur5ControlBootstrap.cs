@@ -36,7 +36,21 @@ public class Ur5ControlBootstrap : MonoBehaviour
     [Tooltip("线速度变化上限（米/秒²）。增大后起停更快，仍保留平滑滤波。")]
     [Range(0.10f, 2.50f)] public float questCommandMaxLinearAcceleration = 1.60f;
     [Tooltip("每次 IK 更新允许的最大关节目标步长（度）。用于平衡机械臂响应速度与轨迹平滑度。")]
-    [Range(0.50f, 6.00f)] public float questMaxJointStepDegrees = 5.20f;
+    [Range(0.50f, 6.00f)] public float questMaxJointStepDegrees = 3.85f;
+
+    [Header("真实机械臂 speedl 安全限速")]
+    [Tooltip("真实 UR speedl 输出的线速度上限，独立于 Quest/Unity dry-run 的视觉跟随速度。首次上真机建议保持保守。")]
+    [Range(0.005f, 0.10f)] public float realRobotMaxLinearSpeed = 0.035f;
+    [Tooltip("真实 UR speedl 输出的角速度上限，单位 rad/s。")]
+    [Range(0.05f, 0.60f)] public float realRobotMaxAngularSpeedRadiansPerSecond = 0.25f;
+    [Tooltip("发送给 speedl 的运动加速度参数。")]
+    [Range(0.02f, 0.50f)] public float realRobotCommandAcceleration = 0.12f;
+    [Tooltip("停止时发送给 stopl/speedl 的加速度参数。")]
+    [Range(0.05f, 0.80f)] public float realRobotStopAcceleration = 0.35f;
+    [Tooltip("本地输出速度斜坡的线加速度上限，避免速度命令突然跃迁。")]
+    [Range(0.02f, 0.30f)] public float realRobotMaxOutputLinearAcceleration = 0.10f;
+    [Tooltip("本地输出速度斜坡的角加速度上限，避免姿态速度命令突然跃迁。")]
+    [Range(0.10f, 2.00f)] public float realRobotMaxOutputAngularAcceleration = 0.70f;
 
     public float EffectiveQuestTranslationScale => GetFastProfileMinimum(questTranslationScale, 3.10f);
     public float EffectiveQuestPreviewMaxLinearSpeed => GetFastProfileMinimum(questPreviewMaxLinearSpeed, 0.70f);
@@ -262,7 +276,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         jointController.readyPoseMaximumDriveTargetLeadDegrees = 16.0f;
         jointController.readyPoseMaximumWristDriveTargetLeadDegrees = 6.0f;
         jointController.useDirectJointStateForMeasuredTeleop = true;
-        jointController.measuredStateTeleopMaximumJointStepDegrees = 5.20f;
+        jointController.measuredStateTeleopMaximumJointStepDegrees = 3.85f;
         jointController.ApplyConfiguredDriveSettings();
     }
 
@@ -282,8 +296,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
         follower.usePhysicalGraspFrameForOrientation = true;
         follower.gripperBase = null;
         follower.positionTolerance = 0.008f;
-        follower.maxJointStepDegrees = 5.20f;
-        follower.maxJointSpeedDegreesPerSecond = 5.20f * Ur5AutoSceneBootstrap.TeleopControlRateHz;
+        follower.maxJointStepDegrees = 3.85f;
+        follower.maxJointSpeedDegreesPerSecond = 3.85f * Ur5AutoSceneBootstrap.TeleopControlRateHz;
         follower.minimumJointDeltaDegrees = 0.015f;
         // Active Quest teleoperation solves from measured joints. The
         // ArticulationBody drive is the only physical lead guard in that path;
@@ -446,6 +460,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
                 speedlClient = gameObject.AddComponent<Ur5UrScriptSpeedlClient>();
             }
 
+            ApplyRealRobotSpeedlSafetyProfile(speedlClient);
             velocityTeleop.speedlClient = speedlClient;
         }
     }
@@ -570,6 +585,25 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.linearSpeedGain = 1.20f;
         velocityTeleop.maxLinearSpeed = EffectiveQuestCommandMaxLinearSpeed;
         velocityTeleop.maxLinearAcceleration = EffectiveQuestCommandMaxLinearAcceleration;
+    }
+
+    public void ApplyRealRobotSpeedlSafetyProfile(Ur5UrScriptSpeedlClient speedlClient)
+    {
+        if (speedlClient == null)
+        {
+            return;
+        }
+
+        speedlClient.requireMotionArmed = true;
+        speedlClient.armOnStart = false;
+        speedlClient.maxLinearSpeed = Mathf.Max(0.0f, realRobotMaxLinearSpeed);
+        speedlClient.maxAngularSpeedRadiansPerSecond = Mathf.Max(0.0f, realRobotMaxAngularSpeedRadiansPerSecond);
+        speedlClient.acceleration = Mathf.Max(0.0f, realRobotCommandAcceleration);
+        speedlClient.stopAcceleration = Mathf.Max(0.0f, realRobotStopAcceleration);
+        speedlClient.limitOutputAcceleration = true;
+        speedlClient.maxOutputLinearAcceleration = Mathf.Max(0.0f, realRobotMaxOutputLinearAcceleration);
+        speedlClient.maxOutputAngularAcceleration = Mathf.Max(0.0f, realRobotMaxOutputAngularAcceleration);
+        speedlClient.sendStoplOnStop = true;
     }
 
     private float GetFastProfileMinimum(float configuredValue, float fastProfileMinimum)

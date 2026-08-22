@@ -2489,7 +2489,13 @@ MonoBehaviour:
   questMovingPreviewLeadMeters: 0.16
   questCommandMaxLinearSpeed: 0.32
   questCommandMaxLinearAcceleration: 1.6
-  questMaxJointStepDegrees: 5.2
+  questMaxJointStepDegrees: 3.85
+  realRobotMaxLinearSpeed: 0.035
+  realRobotMaxAngularSpeedRadiansPerSecond: 0.25
+  realRobotCommandAcceleration: 0.12
+  realRobotStopAcceleration: 0.35
+  realRobotMaxOutputLinearAcceleration: 0.1
+  realRobotMaxOutputAngularAcceleration: 0.7
   showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0
