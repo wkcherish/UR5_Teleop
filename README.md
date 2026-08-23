@@ -29,6 +29,7 @@ Quest 3 right controller
 - `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 目标到 UR5 关节目标的 IK/测量状态跟随器；Grip+A/Grip+B 调姿时会启用腕部优先。
 - `Assets/Scripts/UR5/Ur5ControlBootstrap.cs`：默认 Quest 遥操作参数配置入口，避免 Inspector 手动漏配。
 - `Assets/Scripts/UR5/Quest3RobotiqGripperController.cs`：右手 Trigger 到夹爪开合的输入映射。
+- `Assets/Scripts/UR5/Quest3UdpTeleopSender.cs`：Stage 9.4 Unity-Python 协议 v2 原始手柄发送端；只发送 Quest tracking-frame 位姿、Grip/A/B/Trigger、mode、valid flags、序号和时间戳，不直接控制真机。
 - `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：Quest 测试日志，记录 TCP、关节、IK、按键模式和限制状态。
 - `Assets/Tests/EditMode/Editor/Ur5Continuous6DofBootstrapTests.cs`：控制链关键行为的 EditMode 回归测试。
 

@@ -18,6 +18,15 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     {
         public float[] position;
         public float[] quaternion_xyzw;
+        public string frame;
+    }
+
+    [Serializable]
+    private class ValidPayload
+    {
+        public bool controller_pose;
+        public bool buttons;
+        public bool tracking;
     }
 
     [Serializable]
@@ -26,7 +35,10 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         public bool clutch;
         public float grip;
         public float trigger;
+        public bool primary;
+        public bool secondary;
         public bool rotation_adjust;
+        public bool free_wrist;
         public bool recenter;
         public bool stop_episode;
     }
@@ -34,11 +46,17 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     [Serializable]
     private class QuestPacketPayload
     {
-        public int protocol_version = 1;
-        public long sequence;
-        public long quest_timestamp_ns;
+        public int protocol_version = 2;
+        public long sequence_id;
+        public long source_timestamp_ns;
+        public string source_timestamp_clock;
+        public string source;
+        public string stream;
+        public string mode;
+        public ValidPayload valid;
         public ControllerPayload controller;
         public ButtonsPayload buttons;
+        public bool heartbeat;
     }
 
     [Header("Quest To PC Shadow Telemetry")]
@@ -139,27 +157,44 @@ public class Quest3UdpTeleopSender : MonoBehaviour
 
         bool clutch = ReadClutch(out float gripAmount);
         bool primaryPressed = ReadButton(CommonUsages.primaryButton);
+        bool secondaryPressed = ReadButton(CommonUsages.secondaryButton);
+        string mode = ResolveMode(clutch, primaryPressed, secondaryPressed);
 
         // 故意不经过 XR Origin：PC 端需要的是 Quest tracking frame 的原始数据，
         // 再以 clutch 相对位姿方式映射到 UR5 base frame。
         QuestPacketPayload packet = new QuestPacketPayload
         {
-            sequence = nextSequence,
-            quest_timestamp_ns = GetQuestMonotonicTimestampNanoseconds(),
+            sequence_id = nextSequence,
+            source_timestamp_ns = GetQuestMonotonicTimestampNanoseconds(),
+            source_timestamp_clock = "quest_realtime_since_startup",
+            source = "quest3_unity",
+            stream = controllerNode == XRNode.LeftHand ? "left_controller" : "right_controller",
+            mode = mode,
+            valid = new ValidPayload
+            {
+                controller_pose = true,
+                buttons = true,
+                tracking = controllerDevice.isValid
+            },
             controller = new ControllerPayload
             {
                 position = new[] { position.x, position.y, position.z },
-                quaternion_xyzw = new[] { rotation.x, rotation.y, rotation.z, rotation.w }
+                quaternion_xyzw = new[] { rotation.x, rotation.y, rotation.z, rotation.w },
+                frame = "quest_tracking"
             },
             buttons = new ButtonsPayload
             {
                 clutch = clutch,
                 grip = gripAmount,
                 trigger = ReadTrigger(),
-                rotation_adjust = primaryPressed,
-                recenter = sendPrimaryButtonAsRecenter && primaryPressed,
-                stop_episode = sendSecondaryButtonAsStopEpisode && ReadButton(CommonUsages.secondaryButton)
-            }
+                primary = primaryPressed,
+                secondary = secondaryPressed,
+                rotation_adjust = mode == "default_grasp",
+                free_wrist = mode == "free_wrist",
+                recenter = sendPrimaryButtonAsRecenter && primaryPressed && !clutch,
+                stop_episode = sendSecondaryButtonAsStopEpisode && secondaryPressed && !clutch
+            },
+            heartbeat = true
         };
 
         try
@@ -224,6 +259,21 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     private bool ReadButton(InputFeatureUsage<bool> usage)
     {
         return controllerDevice.TryGetFeatureValue(usage, out bool pressed) && pressed;
+    }
+
+    private static string ResolveMode(bool clutch, bool primaryPressed, bool secondaryPressed)
+    {
+        if (!clutch)
+        {
+            return "idle";
+        }
+
+        if (secondaryPressed)
+        {
+            return "free_wrist";
+        }
+
+        return primaryPressed ? "default_grasp" : "translate";
     }
 
     private void RefreshDeviceIfNeeded()
