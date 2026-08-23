@@ -43,7 +43,7 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsFalse(teleop.enableFineControlButton);
             Assert.IsFalse(teleop.enableLeftSecondaryPoseRotation);
             Assert.IsTrue(teleop.useRobotBaseForwardForRightAPose);
-            Assert.AreEqual(0.0f, teleop.rightADefaultJawYawOffsetDegrees, 0.000001f);
+            Assert.AreEqual(180.0f, teleop.rightADefaultJawYawOffsetDegrees, 0.000001f);
             Assert.IsTrue(teleop.enableRightSecondaryFreeWristPoseControl);
             Assert.AreEqual(1.0f, teleop.rightSecondaryFreeWristRotationScale, 0.000001f);
             Assert.IsFalse(teleop.enableLeftSecondaryOrientationHold);
@@ -231,6 +231,58 @@ public class Ur5Continuous6DofBootstrapTests
             InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
 
             AssertVectorNear(startPosition + new Vector3(0.04f, 0.0f, 0.0f), target.transform.position, 0.000001f);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StylePreview_GripStartUsesCurrentControllerPositionNotStaleFilterState()
+    {
+        GameObject owner = new GameObject("ur10-style-grip-start-filter-test");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            Ur5ControlBootstrap.ApplyDefaultQuestTeleopProfile(teleop);
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Vector3 currentControllerPosition = new Vector3(-0.15f, -0.29f, 0.38f);
+            target.transform.SetPositionAndRotation(startPosition, Quaternion.identity);
+
+            SetNonPublicField(teleop, "hasFilteredControllerPosition", true);
+            SetNonPublicField(
+                teleop,
+                "filteredControllerPositionWorld",
+                currentControllerPosition + new Vector3(0.08f, -0.06f, 0.04f));
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                currentControllerPosition,
+                true,
+                Quaternion.identity);
+
+            SetNonPublicField(teleop, "filteredControllerPositionWorld", currentControllerPosition);
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleAnchoredPoseInput",
+                true,
+                currentControllerPosition,
+                true,
+                Quaternion.identity);
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            AssertVectorNear(
+                startPosition,
+                target.transform.position,
+                0.000001f);
         }
         finally
         {
@@ -817,7 +869,7 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void Ur10StyleRotationAdjustment_DefaultRightAPoseUsesBaseForwardJawReference()
+    public void Ur10StyleRotationAdjustment_DefaultRightAPoseUsesOutwardJawReference()
     {
         GameObject owner = new GameObject("ur10-style-default-a-pose-test");
         GameObject robotBase = new GameObject("robot-base");
@@ -857,9 +909,51 @@ public class Ur5Continuous6DofBootstrapTests
 
             Vector3 jawReference = Vector3.ProjectOnPlane(target.transform.rotation * Vector3.up, Vector3.down).normalized;
             Assert.LessOrEqual(
-                Vector3.Angle(Vector3.forward, jawReference),
+                Vector3.Angle(Vector3.back, jawReference),
                 0.001f,
-                "The first Right Grip+A pose should use the robot-base forward jaw reference instead of preserving an inward-flipped wrist orientation.");
+                "The first Right Grip+A pose should use the outward base-back jaw reference instead of preserving an inward-flipped wrist orientation.");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robotBase);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void Ur10StyleRotationAdjustment_GripAndAStartUsesOutwardJawReference()
+    {
+        GameObject owner = new GameObject("ur10-style-default-a-start-test");
+        GameObject robotBase = new GameObject("robot-base");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.robotBaseFrame = robotBase.transform;
+
+            Quaternion inwardDownwardRotation = Quaternion.LookRotation(Vector3.down, Vector3.left);
+            target.transform.SetPositionAndRotation(Vector3.zero, inwardDownwardRotation);
+            SetNonPublicField(teleop, "ur10StyleRotationAdjustActive", true);
+
+            Quaternion startToolRotation = InvokeNonPublic<Quaternion>(
+                teleop,
+                "GetUr10StyleGripStartToolRotation");
+
+            Assert.LessOrEqual(
+                Vector3.Angle(Vector3.down, startToolRotation * Vector3.forward),
+                0.001f,
+                "Starting directly with Right Grip+A should command the same downward grasp pose as pressing A after Grip.");
+
+            Vector3 jawReference = Vector3.ProjectOnPlane(startToolRotation * Vector3.up, Vector3.down).normalized;
+            Assert.LessOrEqual(
+                Vector3.Angle(Vector3.back, jawReference),
+                0.001f,
+                "Starting directly with Right Grip+A must not inherit an inward-flipped wrist yaw from the current tool pose.");
         }
         finally
         {
@@ -1601,6 +1695,15 @@ public class Ur5Continuous6DofBootstrapTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.IsNotNull(method, methodName + " should exist.");
         method.Invoke(target, arguments);
+    }
+
+    private static T InvokeNonPublic<T>(object target, string methodName, params object[] arguments)
+    {
+        MethodInfo method = target.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.IsNotNull(method, methodName + " should exist.");
+        return (T)method.Invoke(target, arguments);
     }
 
     private static void SetNonPublicField(object target, string fieldName, object value)

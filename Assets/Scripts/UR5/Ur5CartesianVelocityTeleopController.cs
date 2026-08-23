@@ -91,10 +91,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public float leftSecondaryPoseTwistScale = 0.85f;
 
     [Header("右手 A 默认下抓姿态")]
-    [Tooltip("右手 Grip+A 首次调姿时使用基座 forward 作为夹爪两指方向，避免沿用当前向内反的腕部 yaw。")]
+    [Tooltip("右手 Grip+A 首次调姿时使用基座参考方向加默认 yaw 偏移，避免沿用当前向内反的腕部 yaw。")]
     public bool useRobotBaseForwardForRightAPose = true;
-    [Tooltip("右手 Grip+A 默认下抓姿态相对基座 forward 的 yaw 偏移。需要让夹爪横向/纵向对齐桌面夹具时再微调。")]
-    [Range(-180.0f, 180.0f)] public float rightADefaultJawYawOffsetDegrees = 0.0f;
+    [Tooltip("右手 Grip+A 默认下抓姿态相对基座 forward 的 yaw 偏移。180 度对应当前 UR5/Robotiq 模型的外翻下抓默认姿态。")]
+    [Range(-180.0f, 180.0f)] public float rightADefaultJawYawOffsetDegrees = 180.0f;
 
     [Header("右手 B 自由腕部姿态")]
     [Tooltip("右手 Grip+B 进入通用自由姿态控制：位置保持，完整映射右手柄相对旋转，可用于横抓/侧抓等非朝下任务。")]
@@ -1234,6 +1234,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private Quaternion GetUr10StyleGripStartToolRotation()
     {
+        if (ur10StyleRotationAdjustActive)
+        {
+            return GetUr10StyleRotationAdjustToolRotation();
+        }
+
         if (IsUr10StyleRotationLocked() && hasPersistentOrientationTarget)
         {
             return persistentOrientationTarget;
@@ -1254,9 +1259,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         Quaternion rotationWorld,
         bool resetRotationGate)
     {
-        ur10StyleCommandPositionWorld = filterControllerPosition && hasFilteredControllerPosition
-            ? filteredControllerPositionWorld
-            : positionWorld;
+        // The caller has already applied the current controller-position gate.
+        // Re-reading filteredControllerPositionWorld here can use stale pre-Grip
+        // state during clutch startup and create a false TCP jump while the hand
+        // is visually still.
+        ur10StyleCommandPositionWorld = positionWorld;
         if (resetRotationGate || !ur10StyleRotationNoiseGate.IsInitialized)
         {
             ur10StyleRotationNoiseGate.Reset(rotationWorld);

@@ -542,7 +542,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.enableLeftSecondaryPoseRotation = false;
         velocityTeleop.useRobotBaseForwardForRightAPose = true;
-        velocityTeleop.rightADefaultJawYawOffsetDegrees = 0.0f;
+        velocityTeleop.rightADefaultJawYawOffsetDegrees = 180.0f;
         velocityTeleop.enableRightSecondaryFreeWristPoseControl = true;
         velocityTeleop.rightSecondaryFreeWristRotationScale = 1.0f;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
