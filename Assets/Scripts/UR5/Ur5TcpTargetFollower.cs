@@ -1399,7 +1399,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     {
         return wristPriorityDuringRotationAdjust
             && velocityTeleop != null
-            && velocityTeleop.IsUr10StyleRotationAdjustActive;
+            && velocityTeleop.IsUr10StyleWristRotationAdjustActive;
     }
 
     private float GetDlsPositionTaskWeight(bool isExplicitRotationAdjust)

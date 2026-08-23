@@ -90,6 +90,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     [Tooltip("左手 Grip + Y 时，手柄绕竖直方向的相对转动映射到夹爪偏航的比例。")]
     public float leftSecondaryPoseTwistScale = 0.85f;
 
+    [Header("右手 A 默认下抓姿态")]
+    [Tooltip("右手 Grip+A 首次调姿时使用基座 forward 作为夹爪两指方向，避免沿用当前向内反的腕部 yaw。")]
+    public bool useRobotBaseForwardForRightAPose = true;
+    [Tooltip("右手 Grip+A 默认下抓姿态相对基座 forward 的 yaw 偏移。需要让夹爪横向/纵向对齐桌面夹具时再微调。")]
+    [Range(-180.0f, 180.0f)] public float rightADefaultJawYawOffsetDegrees = 0.0f;
+
+    [Header("右手 B 自由腕部姿态")]
+    [Tooltip("右手 Grip+B 进入通用自由姿态控制：位置保持，完整映射右手柄相对旋转，可用于横抓/侧抓等非朝下任务。")]
+    public bool enableRightSecondaryFreeWristPoseControl = true;
+    [Tooltip("右手 Grip+B 的 controller quaternion 旋转倍率。1.0 表示完全跟随手柄相对姿态。")]
+    [Range(0.10f, 1.50f)] public float rightSecondaryFreeWristRotationScale = 1.0f;
+
     [Header("Axis Locks")]
     public bool allowBaseX = true;
     public bool allowBaseY = true;
@@ -298,6 +310,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool hasUr10StyleLockedToolRotation;
     private bool ur10StyleRotationAdjustActive;
     private bool wasUr10StyleRotationAdjustActive;
+    private bool ur10StyleFreeWristAdjustActive;
+    private bool wasUr10StyleFreeWristAdjustActive;
+    private Quaternion ur10StyleFreeWristStartControllerRotation = Quaternion.identity;
+    private Quaternion ur10StyleFreeWristStartGraspWorldRotation = Quaternion.identity;
+    private bool hasUr10StyleFreeWristReference;
     private Quaternion ur10StyleRotationAdjustStartControllerRotation = Quaternion.identity;
     private Quaternion ur10StyleRotationAdjustStartGraspWorldRotation = Quaternion.identity;
     private bool hasUr10StyleRotationAdjustReference;
@@ -380,8 +397,8 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool IsDeviceValid => positionDevice.isValid || rotationDevice.isValid;
     public bool IsPositionClutched { get; private set; }
     public bool IsRotationClutched { get; private set; }
-    // 左手仅握住 Grip、摇杆居中时不应让 IK 继续追赶旧姿态目标；只有摇杆
-    // 真正离开死区后才视为旋转命令。右手平移始终保持实时控制。
+    // 右手 Grip 是唯一平移离合；Grip+A 和 Grip+B 是显式姿态入口。
+    // 释放后不再产生新命令，避免 IK 追赶旧目标。
     public bool IsCommandActive => IsPositionClutched
         || IsRotationCommandActive
         || IsSafetyPoseCommandActive;
@@ -400,6 +417,11 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     public bool IsUr10StyleRotationAdjustActive => UsesUr10StyleAnchoredPoseClutch
         && IsPositionClutched
         && ur10StyleRotationAdjustActive;
+    public bool IsUr10StyleFreeWristAdjustActive => UsesUr10StyleAnchoredPoseClutch
+        && IsPositionClutched
+        && ur10StyleFreeWristAdjustActive;
+    public bool IsUr10StyleWristRotationAdjustActive => IsUr10StyleRotationAdjustActive
+        || IsUr10StyleFreeWristAdjustActive;
     /// <summary>右手 Grip 单独平移时是否已捕获完整 TCP 姿态锁。</summary>
     public bool IsPositionOrientationLocked => IsLegacyPositionOrientationLocked
         || IsUr10StyleGripOnlyOrientationLocked;
@@ -409,9 +431,12 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private bool IsUr10StyleGripOnlyOrientationLocked => UsesUr10StyleAnchoredPoseClutch
         && IsPositionClutched
         && !ur10StyleRotationAdjustActive
+        && !ur10StyleFreeWristAdjustActive
         && hasUr10StyleLockedToolRotation;
     public bool IsRotationCommandActive => IsRotationClutched
-        && (isSecondaryPoseRotationActive
+        && (ur10StyleRotationAdjustActive
+            || ur10StyleFreeWristAdjustActive
+            || isSecondaryPoseRotationActive
             || !IsJoystickRotationMode()
             || (latestRotationJoystickValid
                 && ApplyJoystickDeadband(latestRotationJoystick, rotationJoystickDeadband).sqrMagnitude > 0.000001f));
@@ -811,18 +836,28 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             ur10StyleRotationAdjustActive = false;
             wasUr10StyleRotationAdjustActive = false;
             hasUr10StyleRotationAdjustReference = false;
+            ur10StyleFreeWristAdjustActive = false;
+            wasUr10StyleFreeWristAdjustActive = false;
+            hasUr10StyleFreeWristReference = false;
         }
         else if (poseValid)
         {
-            bool rotationAdjustRequested = IsUr10StyleRotationAdjustmentRequested();
+            bool freeWristAdjustRequested = IsUr10StyleFreeWristRotationAdjustmentRequested();
+            bool rotationAdjustRequested = !freeWristAdjustRequested
+                && IsUr10StyleRotationAdjustmentRequested();
+            bool freeWristAdjustStarted = freeWristAdjustRequested
+                && !wasUr10StyleFreeWristAdjustActive;
+            bool freeWristAdjustEnded = !freeWristAdjustRequested
+                && wasUr10StyleFreeWristAdjustActive;
             bool rotationAdjustStarted = rotationAdjustRequested && !wasUr10StyleRotationAdjustActive;
             bool rotationAdjustEnded = !rotationAdjustRequested && wasUr10StyleRotationAdjustActive;
+            ur10StyleFreeWristAdjustActive = freeWristAdjustRequested;
             ur10StyleRotationAdjustActive = rotationAdjustRequested;
 
             UpdateUr10StyleCommandPose(
                 rawPositionWorld,
                 rawRotationWorld,
-                !wasUr10StyleGripHeld || rotationAdjustStarted);
+                !wasUr10StyleGripHeld || rotationAdjustStarted || freeWristAdjustStarted);
             if (!wasUr10StyleGripHeld && tcpPreviewTarget != null)
             {
                 tcpFollower?.HoldCurrentJointCommandsAtMeasuredPose();
@@ -840,6 +875,17 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                 ur10StyleLockedToolRotation = toolRotation;
                 hasUr10StyleLockedToolRotation = true;
                 hasUr10StyleRotationAdjustReference = false;
+                hasUr10StyleFreeWristReference = false;
+                ResetUr10StyleHandStopHold(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
+            }
+            else if (freeWristAdjustStarted && tcpPreviewTarget != null)
+            {
+                CaptureUr10StyleFreeWristReference();
+                RebaseUr10StyleAtCommandPose(
+                    ur10StyleCommandPositionWorld,
+                    ur10StyleCommandRotationWorld);
                 ResetUr10StyleHandStopHold(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
@@ -854,13 +900,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
             }
-            else if (rotationAdjustEnded && tcpPreviewTarget != null)
+            else if ((rotationAdjustEnded || freeWristAdjustEnded) && tcpPreviewTarget != null)
             {
                 ur10StyleLockedToolRotation = tcpPreviewTarget.rotation;
                 hasUr10StyleLockedToolRotation = true;
                 persistentOrientationTarget = ur10StyleLockedToolRotation;
                 hasPersistentOrientationTarget = true;
                 hasUr10StyleRotationAdjustReference = false;
+                hasUr10StyleFreeWristReference = false;
                 RebaseUr10StyleAtCommandPose(
                     ur10StyleCommandPositionWorld,
                     ur10StyleCommandRotationWorld);
@@ -870,6 +917,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             }
 
             wasUr10StyleRotationAdjustActive = rotationAdjustRequested;
+            wasUr10StyleFreeWristAdjustActive = freeWristAdjustRequested;
         }
 
         IsPositionClutched = gripHeld && poseValid && anchoredPoseTeleop.IsTracking;
@@ -893,7 +941,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
         continuous6DofController.Pause();
         latestContinuous6DofStep = CreateContinuousInactiveStep(
-            IsPositionClutched ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle,
+            IsCommandActive ? Ur5TeleopControllerState.Clutched : Ur5TeleopControllerState.Idle,
             Ur5Continuous6DofFaultReason.None);
         rawBaseLinearVelocity = Vector3.zero;
         rawBaseAngularVelocity = Vector3.zero;
@@ -1019,7 +1067,7 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private bool IsUr10StyleRotationLocked()
     {
-        return !ur10StyleRotationAdjustActive;
+        return !ur10StyleRotationAdjustActive && !ur10StyleFreeWristAdjustActive;
     }
 
     private bool IsUr10StyleRotationAdjustmentRequested()
@@ -1028,6 +1076,15 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
             rotationInputMode,
             positionDevice.isValid && ReadPrimaryButton(positionDevice),
             secondaryButtonPressed: false);
+    }
+
+    private bool IsUr10StyleFreeWristRotationAdjustmentRequested()
+    {
+        return ShouldAdjustUr10StyleFreeWristRotation(
+            rotationInputMode,
+            enableRightSecondaryFreeWristPoseControl,
+            positionDevice.isValid && ReadPrimaryButton(positionDevice),
+            positionDevice.isValid && ReadSecondaryButton(positionDevice));
     }
 
     public static bool ShouldAdjustUr10StyleRotation(
@@ -1043,6 +1100,30 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         return mode == RotationInputMode.Locked && primaryButtonPressed;
+    }
+
+    public static bool ShouldAdjustUr10StyleFreeWristRotation(
+        RotationInputMode mode,
+        bool enableFreeWristControl,
+        bool primaryButtonPressed,
+        bool secondaryButtonPressed)
+    {
+        _ = primaryButtonPressed;
+        return enableFreeWristControl
+            && mode == RotationInputMode.Locked
+            && secondaryButtonPressed;
+    }
+
+    public static Quaternion ApplyFreeWristControllerRotation(
+        Quaternion startGraspRotation,
+        Quaternion controllerRotationDelta,
+        float rotationScale)
+    {
+        float scale = Mathf.Max(0.0f, rotationScale);
+        Quaternion scaledDelta = Mathf.Approximately(scale, 1.0f)
+            ? controllerRotationDelta
+            : Quaternion.SlerpUnclamped(Quaternion.identity, controllerRotationDelta, scale);
+        return NormalizeQuaternion(scaledDelta * startGraspRotation);
     }
 
     private void RebaseUr10StyleAtCommandPose(Vector3 inputPositionWorld, Quaternion inputRotationWorld)
@@ -1069,8 +1150,43 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         }
 
         ur10StyleRotationAdjustStartControllerRotation = ur10StyleCommandRotationWorld;
-        ur10StyleRotationAdjustStartGraspWorldRotation = GetPreviewGraspRotation(tcpPreviewTarget.rotation);
+        ur10StyleRotationAdjustStartGraspWorldRotation = GetRightARotationAdjustStartGraspRotation();
         hasUr10StyleRotationAdjustReference = true;
+    }
+
+    private void CaptureUr10StyleFreeWristReference()
+    {
+        if (tcpPreviewTarget == null)
+        {
+            hasUr10StyleFreeWristReference = false;
+            return;
+        }
+
+        ur10StyleFreeWristStartControllerRotation = ur10StyleCommandRotationWorld;
+        ur10StyleFreeWristStartGraspWorldRotation = GetPreviewGraspRotation(tcpPreviewTarget.rotation);
+        hasUr10StyleFreeWristReference = true;
+    }
+
+    private Quaternion GetRightARotationAdjustStartGraspRotation()
+    {
+        if (!useRobotBaseForwardForRightAPose)
+        {
+            return GetPreviewGraspRotation(tcpPreviewTarget.rotation);
+        }
+
+        Vector3 yawReference = robotBaseFrame != null
+            ? robotBaseFrame.forward
+            : Vector3.forward;
+        yawReference = Vector3.ProjectOnPlane(yawReference, Vector3.down);
+        if (yawReference.sqrMagnitude < 0.0001f)
+        {
+            yawReference = Vector3.forward;
+        }
+
+        yawReference = Quaternion.AngleAxis(
+            rightADefaultJawYawOffsetDegrees,
+            Vector3.down) * yawReference.normalized;
+        return Quaternion.LookRotation(Vector3.down, yawReference.normalized);
     }
 
     private Quaternion GetUr10StyleRotationAdjustToolRotation()
@@ -1091,6 +1207,29 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         return BuildDownwardGraspYawRotation(
             ur10StyleRotationAdjustStartGraspWorldRotation,
             yawDegrees);
+    }
+
+    private Quaternion GetUr10StyleFreeWristAdjustToolRotation()
+    {
+        if (!hasUr10StyleFreeWristReference)
+        {
+            CaptureUr10StyleFreeWristReference();
+        }
+
+        if (!hasUr10StyleFreeWristReference)
+        {
+            return tcpPreviewTarget != null ? tcpPreviewTarget.rotation : Quaternion.identity;
+        }
+
+        Quaternion controllerRotationDelta = NormalizeQuaternion(ur10StyleCommandRotationWorld)
+            * Quaternion.Inverse(NormalizeQuaternion(ur10StyleFreeWristStartControllerRotation));
+        Quaternion desiredGraspRotation = ApplyFreeWristControllerRotation(
+            ur10StyleFreeWristStartGraspWorldRotation,
+            controllerRotationDelta,
+            rightSecondaryFreeWristRotationScale);
+        return tcpFollower != null
+            ? tcpFollower.GetToolRotationForGraspRotation(desiredGraspRotation)
+            : desiredGraspRotation;
     }
 
     private Quaternion GetUr10StyleGripStartToolRotation()
@@ -1512,7 +1651,18 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         Vector3 requestedPosition;
         Quaternion requestedRotation;
         bool hasRequestedPose;
-        if (IsUr10StyleRotationLocked())
+        if (ur10StyleFreeWristAdjustActive)
+        {
+            Quaternion requestedToolRotation = GetUr10StyleFreeWristAdjustToolRotation();
+            hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
+                ur10StyleCommandPositionWorld,
+                ur10StyleCommandRotationWorld,
+                GetUr10StylePositionMapping(),
+                requestedToolRotation,
+                out requestedPosition,
+                out requestedRotation);
+        }
+        else if (IsUr10StyleRotationLocked())
         {
             hasRequestedPose = anchoredPoseTeleop.TryGetRequestedPose(
                 ur10StyleCommandPositionWorld,
@@ -1597,10 +1747,10 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
 
     private Vector3 GetUr10StylePositionMapping()
     {
-        if (ur10StyleRotationAdjustActive)
+        if (ur10StyleRotationAdjustActive || ur10StyleFreeWristAdjustActive)
         {
-            // Grip+A is orientation-only. Controller wrist arcs must not drag
-            // the TCP position while the user is explicitly adjusting attitude.
+            // Grip+A and Grip+B are orientation-only. Controller wrist arcs must
+            // not drag the TCP position while attitude is being adjusted.
             return Vector3.zero;
         }
 
@@ -2029,6 +2179,25 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
     private static bool IsFinite(float value)
     {
         return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
+    private static Quaternion NormalizeQuaternion(Quaternion value)
+    {
+        float squaredMagnitude = value.x * value.x
+            + value.y * value.y
+            + value.z * value.z
+            + value.w * value.w;
+        if (!IsFinite(squaredMagnitude) || squaredMagnitude < 0.000001f)
+        {
+            return Quaternion.identity;
+        }
+
+        float inverseMagnitude = 1.0f / Mathf.Sqrt(squaredMagnitude);
+        return new Quaternion(
+            value.x * inverseMagnitude,
+            value.y * inverseMagnitude,
+            value.z * inverseMagnitude,
+            value.w * inverseMagnitude);
     }
 
     private void SynchronizeOrientationAfterReadyPose()
@@ -2909,6 +3078,14 @@ public class Ur5CartesianVelocityTeleopController : MonoBehaviour
         joystickYawSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickYawSpeedDegreesPerSecond);
         leftSecondaryPoseYawDegreesPerMeter = Mathf.Max(0.0f, leftSecondaryPoseYawDegreesPerMeter);
         leftSecondaryPoseTwistScale = Mathf.Max(0.0f, leftSecondaryPoseTwistScale);
+        rightADefaultJawYawOffsetDegrees = Mathf.Clamp(
+            rightADefaultJawYawOffsetDegrees,
+            -180.0f,
+            180.0f);
+        rightSecondaryFreeWristRotationScale = Mathf.Clamp(
+            rightSecondaryFreeWristRotationScale,
+            0.10f,
+            1.50f);
         joystickPitchSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickPitchSpeedDegreesPerSecond);
         joystickRollSpeedDegreesPerSecond = Mathf.Max(0.0f, joystickRollSpeedDegreesPerSecond);
         commandSmoothingSharpness = Mathf.Max(0.0f, commandSmoothingSharpness);

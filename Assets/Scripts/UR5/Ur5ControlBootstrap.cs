@@ -541,6 +541,10 @@ public class Ur5ControlBootstrap : MonoBehaviour
         velocityTeleop.joystickRollSpeedDegreesPerSecond = 0.0f;
         velocityTeleop.useSecondaryButtonForJoystickRoll = false;
         velocityTeleop.enableLeftSecondaryPoseRotation = false;
+        velocityTeleop.useRobotBaseForwardForRightAPose = true;
+        velocityTeleop.rightADefaultJawYawOffsetDegrees = 0.0f;
+        velocityTeleop.enableRightSecondaryFreeWristPoseControl = true;
+        velocityTeleop.rightSecondaryFreeWristRotationScale = 1.0f;
         velocityTeleop.snapJoystickRotationToZeroInDeadband = true;
 
         // No alternate hand mode can change the standard clutch mapping.

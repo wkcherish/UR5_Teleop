@@ -42,6 +42,10 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsFalse(teleop.enableAPrecisionModifier);
             Assert.IsFalse(teleop.enableFineControlButton);
             Assert.IsFalse(teleop.enableLeftSecondaryPoseRotation);
+            Assert.IsTrue(teleop.useRobotBaseForwardForRightAPose);
+            Assert.AreEqual(0.0f, teleop.rightADefaultJawYawOffsetDegrees, 0.000001f);
+            Assert.IsTrue(teleop.enableRightSecondaryFreeWristPoseControl);
+            Assert.AreEqual(1.0f, teleop.rightSecondaryFreeWristRotationScale, 0.000001f);
             Assert.IsFalse(teleop.enableLeftSecondaryOrientationHold);
             Assert.IsFalse(teleop.snapGraspApproachToVertical);
 
@@ -730,6 +734,26 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
+    public void Ur10StyleFreeWristAdjustment_UsesRightSecondaryButtonForFullPoseControl()
+    {
+        Assert.IsFalse(Ur5CartesianVelocityTeleopController.ShouldAdjustUr10StyleFreeWristRotation(
+            Ur5CartesianVelocityTeleopController.RotationInputMode.Locked,
+            enableFreeWristControl: true,
+            primaryButtonPressed: true,
+            secondaryButtonPressed: false));
+        Assert.IsTrue(Ur5CartesianVelocityTeleopController.ShouldAdjustUr10StyleFreeWristRotation(
+            Ur5CartesianVelocityTeleopController.RotationInputMode.Locked,
+            enableFreeWristControl: true,
+            primaryButtonPressed: false,
+            secondaryButtonPressed: true));
+        Assert.IsFalse(Ur5CartesianVelocityTeleopController.ShouldAdjustUr10StyleFreeWristRotation(
+            Ur5CartesianVelocityTeleopController.RotationInputMode.Locked,
+            enableFreeWristControl: false,
+            primaryButtonPressed: false,
+            secondaryButtonPressed: true));
+    }
+
+    [Test]
     public void Ur10StyleRotationAdjustment_LockedModeKeepsDownwardGraspWhileYawing()
     {
         GameObject owner = new GameObject("ur10-style-downward-yaw-test");
@@ -790,6 +814,80 @@ public class Ur5Continuous6DofBootstrapTests
             UnityEngine.Object.DestroyImmediate(owner);
             UnityEngine.Object.DestroyImmediate(target);
         }
+    }
+
+    [Test]
+    public void Ur10StyleRotationAdjustment_DefaultRightAPoseUsesBaseForwardJawReference()
+    {
+        GameObject owner = new GameObject("ur10-style-default-a-pose-test");
+        GameObject robotBase = new GameObject("robot-base");
+        GameObject target = new GameObject("TcpTarget");
+        try
+        {
+            var teleop = owner.AddComponent<Ur5CartesianVelocityTeleopController>();
+            teleop.enableUr10StyleAnchoredPoseClutch = true;
+            teleop.enableThreeModeController = false;
+            teleop.rotationInputMode = Ur5CartesianVelocityTeleopController.RotationInputMode.Locked;
+            teleop.usePositionGripAsDeadman = false;
+            teleop.tcpPreviewTarget = target.transform;
+            teleop.robotBaseFrame = robotBase.transform;
+            teleop.anchoredPoseSmoothingStep = 1.0f;
+            teleop.angularDeadbandDegrees = 0.0f;
+            teleop.normalPositionScale = 0.50f;
+
+            Vector3 startPosition = new Vector3(0.40f, 0.50f, 0.60f);
+            Quaternion inwardDownwardRotation = Quaternion.LookRotation(Vector3.down, Vector3.left);
+            target.transform.SetPositionAndRotation(startPosition, inwardDownwardRotation);
+
+            SetUr10StyleLatestPose(teleop, Vector3.zero, Quaternion.identity);
+            SetNonPublicField(teleop, "ur10StyleRotationAdjustActive", true);
+            InvokeNonPublic(
+                teleop,
+                "UpdateUr10StyleCommandPose",
+                Vector3.zero,
+                Quaternion.identity,
+                true);
+            InvokeNonPublic(teleop, "CaptureUr10StyleRotationAdjustReference");
+            InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
+
+            Assert.LessOrEqual(
+                Vector3.Angle(Vector3.down, target.transform.rotation * Vector3.forward),
+                0.001f,
+                "Right Grip+A should still snap the gripper approach straight down.");
+
+            Vector3 jawReference = Vector3.ProjectOnPlane(target.transform.rotation * Vector3.up, Vector3.down).normalized;
+            Assert.LessOrEqual(
+                Vector3.Angle(Vector3.forward, jawReference),
+                0.001f,
+                "The first Right Grip+A pose should use the robot-base forward jaw reference instead of preserving an inward-flipped wrist orientation.");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robotBase);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void FreeWristRotation_MapsFullControllerQuaternionWithoutForcingDownwardApproach()
+    {
+        Quaternion startGrasp = Quaternion.LookRotation(Vector3.down, Vector3.forward);
+        Quaternion controllerDelta = Quaternion.AngleAxis(90.0f, Vector3.right);
+
+        Quaternion adjusted = Ur5CartesianVelocityTeleopController.ApplyFreeWristControllerRotation(
+            startGrasp,
+            controllerDelta,
+            1.0f);
+
+        Assert.Greater(
+            Vector3.Angle(Vector3.down, adjusted * Vector3.forward),
+            45.0f,
+            "Free wrist pose must allow side/horizontal grasp attitudes instead of snapping every adjustment back to world down.");
+        Assert.LessOrEqual(
+            Quaternion.Angle(controllerDelta * startGrasp, adjusted),
+            0.001f,
+            "Free wrist pose should use the full relative controller quaternion, matching the UR10_Teleop relative-pose mapping.");
     }
 
     [Test]
@@ -1364,7 +1462,8 @@ public class Ur5Continuous6DofBootstrapTests
                 + "j1_drive_deg,j2_drive_deg,j3_drive_deg,j4_drive_deg,j5_drive_deg,j6_drive_deg,"
                 + "j1_measured_deg,j2_measured_deg,j3_measured_deg,"
                 + "j4_measured_deg,j5_measured_deg,j6_measured_deg,"
-                + "ur10_rotation_adjust_active,position_orientation_locked,"
+                + "ur10_rotation_adjust_active,ur10_free_wrist_adjust_active,"
+                + "position_orientation_locked,"
                 + "controller_position_gate_holding,preview_lead_limited,"
                 + "active_preview_lead_limit_m,moving_preview_lead_active,"
                 + "direct_joint_state_servo_enabled,direct_joint_state_servo_active,"

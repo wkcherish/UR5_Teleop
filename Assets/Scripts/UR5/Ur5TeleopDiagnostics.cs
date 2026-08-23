@@ -85,6 +85,7 @@ public class Ur5TeleopDiagnostics : MonoBehaviour
             + " strategy=" + (teleop != null && teleop.IsAnchoredPoseStrategyActive ? "anchored" : "idle")
             + " mode=" + modeLabel
             + " state=" + (teleop != null ? teleop.TeleopControllerState.ToString() : "n/a")
+            + " freeWrist=" + (teleop != null && teleop.IsUr10StyleFreeWristAdjustActive ? "on" : "off")
             + " smoothStep=" + (teleop != null ? teleop.ActiveAnchoredPoseSmoothingStep.ToString("F2") : "n/a")
             + " logical=" + (teleop != null ? teleop.LogicalCommandPosition.ToString("F4") : "n/a")
             + " filtered=" + (teleop != null ? teleop.FilteredCommandPosition.ToString("F4") : "n/a")
