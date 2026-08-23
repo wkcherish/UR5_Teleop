@@ -62,6 +62,61 @@ public sealed class Ur5AnchoredPoseTeleopStrategy
         return Resume(inputPosition, inputRotation, currentTargetPosition, currentTargetRotation);
     }
 
+    /// <summary>
+    /// Updates the relative-pose anchors while preserving the filtered command.
+    /// Workspace limits use this to discard hand overtravel at a boundary
+    /// without making the commanded TCP pose jump to the boundary.
+    /// </summary>
+    public bool RebaseInputAnchorPreservingCommand(
+        Vector3 inputPosition,
+        Quaternion inputRotation,
+        Vector3 constrainedToolPosition,
+        Quaternion constrainedToolRotation)
+    {
+        if (!IsFinite(inputPosition)
+            || !IsValidRotation(inputRotation)
+            || !IsFinite(constrainedToolPosition)
+            || !IsValidRotation(constrainedToolRotation))
+        {
+            return false;
+        }
+
+        inputAnchorPosition = inputPosition;
+        inputAnchorRotation = Normalize(inputRotation);
+        toolAnchorPosition = constrainedToolPosition;
+        toolAnchorRotation = Normalize(constrainedToolRotation);
+        IsTracking = true;
+        return true;
+    }
+
+    public bool TryGetRequestedPose(
+        Vector3 inputPosition,
+        Quaternion inputRotation,
+        Vector3 positionMapping,
+        out Vector3 requestedPosition,
+        out Quaternion requestedRotation)
+    {
+        requestedPosition = targetPosition;
+        requestedRotation = targetRotation;
+        if (!IsTracking
+            || !IsFinite(inputPosition)
+            || !IsValidRotation(inputRotation)
+            || !IsFinite(positionMapping))
+        {
+            return false;
+        }
+
+        Quaternion relativeRotation = Normalize(inputRotation)
+            * Quaternion.Inverse(inputAnchorRotation);
+        return TryGetRequestedPose(
+            inputPosition,
+            inputRotation,
+            positionMapping,
+            relativeRotation * toolAnchorRotation,
+            out requestedPosition,
+            out requestedRotation);
+    }
+
     public bool TryGetRequestedPose(
         Vector3 inputPosition,
         Quaternion inputRotation,

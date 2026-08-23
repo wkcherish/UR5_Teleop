@@ -18,13 +18,27 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     {
         public float[] position;
         public float[] quaternion_xyzw;
+        public string frame;
+    }
+
+    [Serializable]
+    private class ValidPayload
+    {
+        public bool controller_pose;
+        public bool buttons;
+        public bool tracking;
     }
 
     [Serializable]
     private class ButtonsPayload
     {
         public bool clutch;
+        public float grip;
         public float trigger;
+        public bool primary;
+        public bool secondary;
+        public bool rotation_adjust;
+        public bool free_wrist;
         public bool recenter;
         public bool stop_episode;
     }
@@ -32,11 +46,17 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     [Serializable]
     private class QuestPacketPayload
     {
-        public int protocol_version = 1;
-        public long sequence;
-        public long quest_timestamp_ns;
+        public int protocol_version = 2;
+        public long sequence_id;
+        public long source_timestamp_ns;
+        public string source_timestamp_clock;
+        public string source;
+        public string stream;
+        public string mode;
+        public ValidPayload valid;
         public ControllerPayload controller;
         public ButtonsPayload buttons;
+        public bool heartbeat;
     }
 
     [Header("Quest To PC Shadow Telemetry")]
@@ -53,6 +73,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     [Tooltip("Grip is the PC-side clutch/deadman signal. It uses analog grip when available, otherwise gripButton.")]
     public bool useGripAsClutch = true;
     [Range(0.0f, 1.0f)] public float clutchGripThreshold = 0.65f;
+    [Range(0.0f, 1.0f)] public float clutchGripReleaseThreshold = 0.40f;
     [Tooltip("Disabled by default because A/B may already be used by Unity grasp assist. Enable only after assigning a non-conflicting PC-side recenter action.")]
     public bool sendPrimaryButtonAsRecenter;
     [Tooltip("Disabled by default because A/B may already be used by Unity grasp assist. Enable only after assigning a non-conflicting PC-side episode-stop action.")]
@@ -64,6 +85,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     private float nextSendTime;
     private bool hasLoggedMissingDevice;
     private bool hasLoggedInvalidEndpoint;
+    private bool clutchLatched;
 
     public bool IsSending => sendPackets && udpClient != null && controllerDevice.isValid;
     public long LastSentSequence { get; private set; } = -1;
@@ -133,24 +155,46 @@ public class Quest3UdpTeleopSender : MonoBehaviour
             return;
         }
 
+        bool clutch = ReadClutch(out float gripAmount);
+        bool primaryPressed = ReadButton(CommonUsages.primaryButton);
+        bool secondaryPressed = ReadButton(CommonUsages.secondaryButton);
+        string mode = ResolveMode(clutch, primaryPressed, secondaryPressed);
+
         // 故意不经过 XR Origin：PC 端需要的是 Quest tracking frame 的原始数据，
         // 再以 clutch 相对位姿方式映射到 UR5 base frame。
         QuestPacketPayload packet = new QuestPacketPayload
         {
-            sequence = nextSequence,
-            quest_timestamp_ns = GetQuestMonotonicTimestampNanoseconds(),
+            sequence_id = nextSequence,
+            source_timestamp_ns = GetQuestMonotonicTimestampNanoseconds(),
+            source_timestamp_clock = "quest_realtime_since_startup",
+            source = "quest3_unity",
+            stream = controllerNode == XRNode.LeftHand ? "left_controller" : "right_controller",
+            mode = mode,
+            valid = new ValidPayload
+            {
+                controller_pose = true,
+                buttons = true,
+                tracking = controllerDevice.isValid
+            },
             controller = new ControllerPayload
             {
                 position = new[] { position.x, position.y, position.z },
-                quaternion_xyzw = new[] { rotation.x, rotation.y, rotation.z, rotation.w }
+                quaternion_xyzw = new[] { rotation.x, rotation.y, rotation.z, rotation.w },
+                frame = "quest_tracking"
             },
             buttons = new ButtonsPayload
             {
-                clutch = ReadClutch(),
+                clutch = clutch,
+                grip = gripAmount,
                 trigger = ReadTrigger(),
-                recenter = sendPrimaryButtonAsRecenter && ReadButton(CommonUsages.primaryButton),
-                stop_episode = sendSecondaryButtonAsStopEpisode && ReadButton(CommonUsages.secondaryButton)
-            }
+                primary = primaryPressed,
+                secondary = secondaryPressed,
+                rotation_adjust = mode == "default_grasp",
+                free_wrist = mode == "free_wrist",
+                recenter = sendPrimaryButtonAsRecenter && primaryPressed && !clutch,
+                stop_episode = sendSecondaryButtonAsStopEpisode && secondaryPressed && !clutch
+            },
+            heartbeat = true
         };
 
         try
@@ -171,20 +215,38 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         }
     }
 
-    private bool ReadClutch()
+    private bool ReadClutch(out float gripAmount)
     {
+        gripAmount = 0.0f;
+        bool hasAnalogGrip = controllerDevice.TryGetFeatureValue(CommonUsages.grip, out float rawGripAmount);
+        bool hasGripButton = controllerDevice.TryGetFeatureValue(CommonUsages.gripButton, out bool gripPressed);
+        if (hasAnalogGrip)
+        {
+            gripAmount = Mathf.Clamp01(rawGripAmount);
+        }
+        else if (hasGripButton && gripPressed)
+        {
+            gripAmount = 1.0f;
+        }
+
         if (!useGripAsClutch)
         {
+            clutchLatched = true;
             return true;
         }
 
-        if (controllerDevice.TryGetFeatureValue(CommonUsages.grip, out float gripAmount))
+        if (hasAnalogGrip)
         {
-            return gripAmount >= Mathf.Clamp01(clutchGripThreshold);
+            float pressThreshold = Mathf.Clamp01(clutchGripThreshold);
+            float releaseThreshold = Mathf.Min(pressThreshold, Mathf.Clamp01(clutchGripReleaseThreshold));
+            clutchLatched = clutchLatched
+                ? gripAmount >= releaseThreshold || (hasGripButton && gripPressed)
+                : gripAmount >= pressThreshold || (hasGripButton && gripPressed);
+            return clutchLatched;
         }
 
-        return controllerDevice.TryGetFeatureValue(CommonUsages.gripButton, out bool gripPressed)
-            && gripPressed;
+        clutchLatched = hasGripButton && gripPressed;
+        return clutchLatched;
     }
 
     private float ReadTrigger()
@@ -197,6 +259,21 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     private bool ReadButton(InputFeatureUsage<bool> usage)
     {
         return controllerDevice.TryGetFeatureValue(usage, out bool pressed) && pressed;
+    }
+
+    private static string ResolveMode(bool clutch, bool primaryPressed, bool secondaryPressed)
+    {
+        if (!clutch)
+        {
+            return "idle";
+        }
+
+        if (secondaryPressed)
+        {
+            return "free_wrist";
+        }
+
+        return primaryPressed ? "default_grasp" : "translate";
     }
 
     private void RefreshDeviceIfNeeded()
@@ -241,5 +318,6 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         receiverPort = Mathf.Clamp(receiverPort, 1, 65535);
         sendRateHz = Mathf.Clamp(sendRateHz, 1.0f, 120.0f);
         clutchGripThreshold = Mathf.Clamp01(clutchGripThreshold);
+        clutchGripReleaseThreshold = Mathf.Clamp(clutchGripReleaseThreshold, 0.0f, clutchGripThreshold);
     }
 }

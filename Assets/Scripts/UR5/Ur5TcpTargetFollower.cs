@@ -10,6 +10,14 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         CcdFallback
     }
 
+    public enum IkTaskMode
+    {
+        None,
+        DampedLeastSquares,
+        CcdFallback,
+        LockedTranslationSingleDls
+    }
+
     [Header("References")]
     public Ur5ArticulationJointController jointController;
     public Transform robotRoot;
@@ -58,6 +66,10 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public float fullSpeedPositionError = 0.12f;
     [Tooltip("Optional legacy IK-to-drive lead window in degrees. Set to 0 to rely on the Articulation measured-joint lead guard only.")]
     public float maximumCommandLeadDegrees = 2.00f;
+    [Tooltip("Separate IK-to-drive lead window for wrist joints. Wrist joints own most grasp-frame orientation changes and need a larger window than shoulder/elbow joints.")]
+    public float maximumWristCommandLeadDegrees = 2.00f;
+    [Tooltip("During active XR teleoperation, solve every waypoint from measured joint state and let the Articulation controller provide the final physical lead guard.")]
+    public bool useMeasuredStateTeleopSolve = true;
     public float maxReachError = 1.5f;
     public bool clampToDriveLimits = true;
 
@@ -75,6 +87,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     [Tooltip("Bias orientation correction toward wrist joints to avoid shoulder/elbow solution jumps.")]
     public bool preferWristForOrientation = true;
     [Range(0.0f, 1.0f)] public float proximalOrientationWeight = 0.25f;
+    [Header("Grip+A Wrist Priority")]
+    [Tooltip("During explicit Grip+A attitude control, reduce shoulder/elbow participation so the gripper turns mainly from the wrist.")]
+    public bool wristPriorityDuringRotationAdjust = true;
+    [Range(0.0f, 1.0f)] public float rotationAdjustProximalJointWeight = 0.02f;
+    [Range(0.0f, 1.0f)] public float rotationAdjustPositionTaskWeight = 0.15f;
+    [Tooltip("Extra DLS damping while Grip+A is active. Higher values reduce multi-joint swings at the cost of slower convergence.")]
+    public float rotationAdjustDlsDampingMultiplier = 1.60f;
     [Tooltip("Right-hand translation keeps the current tool attitude as a high-priority task. Higher values prevent the gripper from tilting when the base/shoulder moves.")]
     public float translationOrientationHoldWeight = 8.00f;
     [Tooltip("0 = no smoothing, 1 = keep the previous IK delta. Use small values to reduce twitching.")]
@@ -217,6 +236,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     public bool IsNearSingularity { get; private set; }
     public float LastDlsMinimumPivot { get; private set; }
     public bool WasIkCommandLeadLimited { get; private set; }
+    public float TargetStationarySeconds => targetStationaryTime;
+    public bool IsSettledTargetHoldActive => isSettledTargetHoldActive;
+    public IkTaskMode LastIkTaskMode { get; private set; }
 
     /// <summary>
     /// 将命令 TCP 的姿态对齐到当前实际抓取坐标系，但不改变其位置。
@@ -303,8 +325,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     private void OnValidate()
     {
         minimumJointDeltaDegrees = Mathf.Max(0.0f, minimumJointDeltaDegrees);
+        maximumCommandLeadDegrees = Mathf.Max(0.0f, maximumCommandLeadDegrees);
+        maximumWristCommandLeadDegrees = Mathf.Max(0.0f, maximumWristCommandLeadDegrees);
         dlsDamping = Mathf.Max(0.0f, dlsDamping);
         dlsOrientationWeight = Mathf.Max(0.0f, dlsOrientationWeight);
+        rotationAdjustProximalJointWeight = Mathf.Clamp01(rotationAdjustProximalJointWeight);
+        rotationAdjustPositionTaskWeight = Mathf.Clamp01(rotationAdjustPositionTaskWeight);
+        rotationAdjustDlsDampingMultiplier = Mathf.Max(1.0f, rotationAdjustDlsDampingMultiplier);
         translationOrientationHoldWeight = Mathf.Max(0.0f, translationOrientationHoldWeight);
         dlsGain = Mathf.Max(0.0f, dlsGain);
         stationaryDampingStartSeconds = Mathf.Max(0.0f, stationaryDampingStartSeconds);
@@ -425,6 +452,27 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         targetStationaryTime = 0.0f;
         ResetJointDeltaSmoothing();
         isSettledTargetHoldActive = true;
+        nextJointAssignmentTime = Time.time;
+    }
+
+    /// <summary>
+    /// Freezes queued and drive-level joint commands at the measured joint pose
+    /// without taking ownership of TcpTarget. Used on Grip rising edge so the
+    /// next IK frame cannot execute stale waypoints from a previous clutch.
+    /// </summary>
+    public void HoldCurrentJointCommandsAtMeasuredPose()
+    {
+        ResolveReferences();
+        if (jointController == null)
+        {
+            return;
+        }
+
+        HoldCurrentJointsAndClearTrajectory();
+        ResetJointDeltaSmoothing();
+        isSettledTargetHoldActive = false;
+        safeReleaseSettlePending = false;
+        safeReleaseSettleElapsedSeconds = 0.0f;
         nextJointAssignmentTime = Time.time;
     }
 
@@ -610,6 +658,18 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void BeginSafeRelease()
     {
+        if (UsesUr10StyleAnchoredPoseTeleop())
+        {
+            // In Quest data-collection mode, Grip release is a hard stop. Any
+            // remaining command lead would otherwise keep the simulated arm
+            // chasing a stale target after the operator's hand has stopped.
+            safeReleaseSettlePending = false;
+            safeReleaseSettleElapsedSeconds = 0.0f;
+            SnapTargetToActualPose("FollowerSafeReleaseUr10Style");
+            EnterControllerIdleHold();
+            return;
+        }
+
         UpdateTrackingErrorsOnly();
         bool residualIsSmall = PositionError <= safeReleaseMaximumResidualMeters
             && RotationErrorDegrees <= safeReleaseMaximumResidualDegrees;
@@ -624,6 +684,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         // that lead once and explicitly, rather than letting multiple writers
         // repeatedly pull TcpTarget back to the physical arm.
         SnapTargetToActualPose("FollowerSafeRelease");
+    }
+
+    private bool UsesUr10StyleAnchoredPoseTeleop()
+    {
+        return velocityTeleop != null
+            && velocityTeleop.enabled
+            && velocityTeleop.UsesUr10StyleAnchoredPoseClutch;
     }
 
     private void SnapTargetToActualPose(string writer)
@@ -685,6 +752,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private void StepTowardTarget()
     {
+        LastIkTaskMode = IkTaskMode.None;
         WasIkCommandLeadLimited = false;
         Vector3 error = UpdateTrackingErrorsOnly();
 
@@ -703,18 +771,20 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         BeginJointWaypoint(jointCount);
         if (IsTranslationOrientationHoldActive())
         {
-            StepStrictTranslationWithLockedOrientation(jointCount);
+            StepLockedTranslationWithSingleDlsTask(jointCount, error);
             CommitJointWaypoint();
             return;
         }
 
         if (solverMode == IkSolverMode.DampedLeastSquares)
         {
+            LastIkTaskMode = IkTaskMode.DampedLeastSquares;
             ApplyDampedLeastSquaresStep(jointCount, error);
             CommitJointWaypoint();
             return;
         }
 
+        LastIkTaskMode = IkTaskMode.CcdFallback;
         if (PositionError > GetActivePositionTolerance())
         {
             // Drives are applied by the physics simulation after this method returns.
@@ -741,21 +811,10 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         CommitJointWaypoint();
     }
 
-    private void StepStrictTranslationWithLockedOrientation(int jointCount)
+    private void StepLockedTranslationWithSingleDlsTask(int jointCount, Vector3 positionError)
     {
-        if (PositionError > GetActivePositionTolerance())
-        {
-            // 严格模式先只用 CCD 满足位置。与普通 DLS 加权折中不同，
-            // 这里不会让位置误差稀释后续的完整姿态约束。
-            for (int jointIndex = jointCount - 1; jointIndex >= 0; jointIndex--)
-            {
-                ApplyCcdStep(jointIndex);
-            }
-        }
-
-        // 立刻以腕关节抵消底座/肩部的转角；目标为右手 Grip 起始时
-        // 捕获的完整世界四元数，因此夹爪不会跟随底座绕 Z 轴自转。
-        StepOrientationTowardTarget(jointCount);
+        LastIkTaskMode = IkTaskMode.LockedTranslationSingleDls;
+        ApplyDampedLeastSquaresStep(jointCount, positionError);
     }
 
     private void StepTowardReadyPose()
@@ -1006,16 +1065,21 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     {
         workingJointCount = Mathf.Min(jointCount, jointController.JointCount);
         EnsureWorkingJointBuffer(workingJointCount);
+        bool useMeasuredState = IsMeasuredStateTeleopSolveActive();
         for (int i = 0; i < workingJointCount; i++)
         {
-            // DLS is evaluated from the current physical geometry. Building a
-            // new waypoint from an older, un-applied logical target would
-            // repeatedly integrate corrections against stale geometry and can
-            // overshoot when the Drive is rate limited.
-            workingJointTargetsDegrees[i] = jointController.GetAppliedJointTargetDegrees(i);
+            // Active XR teleoperation is closed around measured joint state. Using
+            // a drive target that is already ahead of the physical arm creates a
+            // second controller loop and produces lead/lag kicks near the wrist.
+            workingJointTargetsDegrees[i] = useMeasuredState
+                ? jointController.GetMeasuredJointDegrees(i)
+                : jointController.GetDriveTargetDegrees(i);
         }
 
-        workingJointWaypointChanged = false;
+        // Even a sub-threshold correction must replace the previous teleop target
+        // with the measured hold pose. Otherwise a stale target keeps pulling after
+        // the hand has stopped moving.
+        workingJointWaypointChanged = useMeasuredState;
     }
 
     private void QueueJointDelta(int jointIndex, float deltaDegrees)
@@ -1036,6 +1100,22 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             return;
         }
 
+        ClampWorkingJointTargetsToCommandLead();
+
+        if (IsMeasuredStateTeleopSolveActive())
+        {
+            // XR teleoperation owns the latest measured-state command. Do not
+            // let a previous trajectory waypoint arrive after this frame and
+            // pull the arm back toward an obsolete target.
+            trajectoryPlayer?.ClearQueue();
+            jointController.SetMeasuredStateTeleopTargetsDegrees(
+                workingJointTargetsDegrees,
+                workingJointCount,
+                clampToDriveLimits,
+                ShouldUseDirectMeasuredStateTeleopServo());
+            return;
+        }
+
         if (trajectoryPlayer != null && trajectoryPlayer.enabled)
         {
             trajectoryPlayer.EnqueueWaypointDegrees(workingJointTargetsDegrees, workingJointCount);
@@ -1047,6 +1127,44 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             workingJointCount,
             clampToDriveLimits,
             false);
+    }
+
+    private bool ShouldUseDirectMeasuredStateTeleopServo()
+    {
+        // Quest Build-and-Run uses the Unity articulation as a visual digital twin.
+        // When real UR output is enabled, joint state should come from robot feedback
+        // instead of local kinematic writes.
+        return velocityTeleop == null
+            || velocityTeleop.speedlClient == null
+            || !velocityTeleop.speedlClient.enableRealRobotOutput;
+    }
+
+    private void ClampWorkingJointTargetsToCommandLead()
+    {
+        if (jointController == null || IsMeasuredStateTeleopSolveActive())
+        {
+            return;
+        }
+
+        for (int i = 0; i < workingJointCount; i++)
+        {
+            float maximumLead = GetCommandLeadLimitDegrees(i, workingJointCount);
+            if (maximumLead <= 0.0f)
+            {
+                continue;
+            }
+
+            float driveTargetDegrees = jointController.GetDriveTargetDegrees(i);
+            float constrainedTargetDegrees = Mathf.Clamp(
+                workingJointTargetsDegrees[i],
+                driveTargetDegrees - maximumLead,
+                driveTargetDegrees + maximumLead);
+            if (Mathf.Abs(constrainedTargetDegrees - workingJointTargetsDegrees[i]) > 0.0001f)
+            {
+                workingJointTargetsDegrees[i] = constrainedTargetDegrees;
+                WasIkCommandLeadLimited = true;
+            }
+        }
     }
 
     private void HoldCurrentJointsAndClearTrajectory()
@@ -1097,6 +1215,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
         bool solvePosition = PositionError > GetActivePositionTolerance();
         bool isTranslationOrientationHold = IsTranslationOrientationHoldActive();
+        bool isExplicitRotationAdjust = IsExplicitRotationAdjustmentActive();
         bool solveRotation = allowRotationSolve
             && (isTranslationOrientationHold
                 || RotationErrorDegrees > GetActiveRotationToleranceDegrees());
@@ -1106,7 +1225,9 @@ public class Ur5TcpTargetFollower : MonoBehaviour
         }
 
         const int taskDimensions = 6;
-        float positionWeight = solvePosition ? 1.0f : 0.0f;
+        float positionWeight = solvePosition
+            ? GetDlsPositionTaskWeight(isExplicitRotationAdjust)
+            : 0.0f;
         float rotationWeight = solveRotation
             ? (isTranslationOrientationHold
                 ? Mathf.Max(dlsOrientationWeight, translationOrientationHoldWeight)
@@ -1121,15 +1242,16 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             ArticulationBody joint = jointController.Joints[i];
             Vector3 axis = GetJointAxisWorld(joint, i);
             Vector3 linearVelocity = Vector3.Cross(axis, controlPoint - joint.transform.position);
+            float jointColumnWeight = GetDlsJointColumnWeight(i, firstWristIndex, isExplicitRotationAdjust);
             float jointRotationWeight = preferWristForOrientation && i < firstWristIndex
                 ? Mathf.Clamp01(proximalOrientationWeight)
                 : 1.0f;
-            jacobian[0, i] = linearVelocity.x * positionWeight;
-            jacobian[1, i] = linearVelocity.y * positionWeight;
-            jacobian[2, i] = linearVelocity.z * positionWeight;
-            jacobian[3, i] = axis.x * rotationWeight * jointRotationWeight;
-            jacobian[4, i] = axis.y * rotationWeight * jointRotationWeight;
-            jacobian[5, i] = axis.z * rotationWeight * jointRotationWeight;
+            jacobian[0, i] = linearVelocity.x * positionWeight * jointColumnWeight;
+            jacobian[1, i] = linearVelocity.y * positionWeight * jointColumnWeight;
+            jacobian[2, i] = linearVelocity.z * positionWeight * jointColumnWeight;
+            jacobian[3, i] = axis.x * rotationWeight * jointRotationWeight * jointColumnWeight;
+            jacobian[4, i] = axis.y * rotationWeight * jointRotationWeight * jointColumnWeight;
+            jacobian[5, i] = axis.z * rotationWeight * jointRotationWeight * jointColumnWeight;
         }
 
         float[] taskError =
@@ -1142,7 +1264,7 @@ public class Ur5TcpTargetFollower : MonoBehaviour
             rotationErrorRadians.z * rotationWeight
         };
         float[,] normalMatrix = new float[taskDimensions, taskDimensions];
-        float dampingSquared = dlsDamping * dlsDamping;
+        float dampingSquared = GetDlsDampingSquared(isExplicitRotationAdjust);
 
         for (int row = 0; row < taskDimensions; row++)
         {
@@ -1184,16 +1306,17 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 jointDeltaRadians += jacobian[row, i] * taskVelocity[row];
             }
 
-            float rawDeltaDegrees = Mathf.Clamp(
-                jointDeltaRadians * Mathf.Rad2Deg * GetEffectiveDlsGain(),
-                -GetMaxJointStepDegrees(Time.fixedDeltaTime),
-                GetMaxJointStepDegrees(Time.fixedDeltaTime));
+            float rawDeltaDegrees = jointDeltaRadians * Mathf.Rad2Deg * GetEffectiveDlsGain();
+            float maximumStepDegrees = GetMaxJointStepDegrees(Time.fixedDeltaTime);
+            rawDeltaDegrees = LimitMeasuredStateJointStep(rawDeltaDegrees, maximumStepDegrees);
             if (!IsFinite(rawDeltaDegrees))
             {
                 RegisterIkFailure("Non-finite DLS joint delta");
                 return;
             }
-            float deltaDegrees = SmoothJointDelta(i, rawDeltaDegrees);
+            float deltaDegrees = IsMeasuredStateTeleopSolveActive()
+                ? rawDeltaDegrees
+                : SmoothJointDelta(i, rawDeltaDegrees);
             if (Mathf.Abs(deltaDegrees) > minimumJointDeltaDegrees)
             {
                 QueueJointDelta(i, deltaDegrees);
@@ -1270,6 +1393,44 @@ public class Ur5TcpTargetFollower : MonoBehaviour
     {
         return velocityTeleop != null
             && velocityTeleop.IsPositionOrientationLocked;
+    }
+
+    private bool IsExplicitRotationAdjustmentActive()
+    {
+        return wristPriorityDuringRotationAdjust
+            && velocityTeleop != null
+            && velocityTeleop.IsUr10StyleWristRotationAdjustActive;
+    }
+
+    private float GetDlsPositionTaskWeight(bool isExplicitRotationAdjust)
+    {
+        return isExplicitRotationAdjust
+            ? Mathf.Clamp01(rotationAdjustPositionTaskWeight)
+            : 1.0f;
+    }
+
+    private float GetDlsJointColumnWeight(
+        int jointIndex,
+        int firstWristIndex,
+        bool isExplicitRotationAdjust)
+    {
+        if (!isExplicitRotationAdjust || jointIndex >= firstWristIndex)
+        {
+            return 1.0f;
+        }
+
+        return Mathf.Clamp01(rotationAdjustProximalJointWeight);
+    }
+
+    private float GetDlsDampingSquared(bool isExplicitRotationAdjust)
+    {
+        float damping = Mathf.Max(0.0f, dlsDamping);
+        if (isExplicitRotationAdjust)
+        {
+            damping *= Mathf.Max(1.0f, rotationAdjustDlsDampingMultiplier);
+        }
+
+        return damping * damping;
     }
 
     private bool SolveLinearSystem(float[,] matrix, float[] rightHandSide, float[] solution)
@@ -1453,8 +1614,13 @@ public class Ur5TcpTargetFollower : MonoBehaviour
 
     private bool IsJointCommandLeadLimited(int jointIndex)
     {
-        float maximumLead = Mathf.Max(0.0f, maximumCommandLeadDegrees);
-        if (maximumLead <= 0.0f || jointController == null)
+        if (jointController == null || IsMeasuredStateTeleopSolveActive())
+        {
+            return false;
+        }
+
+        float maximumLead = GetCommandLeadLimitDegrees(jointIndex, jointController.JointCount);
+        if (maximumLead <= 0.0f)
         {
             return false;
         }
@@ -1463,6 +1629,39 @@ public class Ur5TcpTargetFollower : MonoBehaviour
                 - jointController.GetAppliedJointTargetDegrees(jointIndex)) > maximumLead;
         WasIkCommandLeadLimited |= isLimited;
         return isLimited;
+    }
+
+    private static float LimitMeasuredStateJointStep(float requestedDeltaDegrees, float maximumStepDegrees)
+    {
+        if (!IsFinite(requestedDeltaDegrees) || !IsFinite(maximumStepDegrees))
+        {
+            return 0.0f;
+        }
+
+        float maximumStep = Mathf.Max(0.0f, maximumStepDegrees);
+        return Mathf.Clamp(requestedDeltaDegrees, -maximumStep, maximumStep);
+    }
+
+    private bool IsMeasuredStateTeleopSolveActive()
+    {
+        return useMeasuredStateTeleopSolve
+            && velocityTeleop != null
+            && velocityTeleop.IsCommandActive;
+    }
+
+    private float GetCommandLeadLimitDegrees(int jointIndex, int jointCount)
+    {
+        int firstWristIndex = Mathf.Max(0, jointCount - wristJointCount);
+        if (jointIndex >= firstWristIndex)
+        {
+            float wristLead = Mathf.Max(0.0f, maximumWristCommandLeadDegrees);
+            if (wristLead > 0.0f)
+            {
+                return wristLead;
+            }
+        }
+
+        return Mathf.Max(0.0f, maximumCommandLeadDegrees);
     }
 
     private float SmoothJointDelta(int jointIndex, float rawDeltaDegrees)

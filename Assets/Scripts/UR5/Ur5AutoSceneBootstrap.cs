@@ -115,6 +115,8 @@ public static class Ur5AutoSceneBootstrap
         if (controlBootstrap != null)
         {
             follower.maxJointStepDegrees = controlBootstrap.EffectiveQuestMaxJointStepDegrees;
+            follower.maxJointSpeedDegreesPerSecond = controlBootstrap.EffectiveQuestMaxJointStepDegrees
+                * TeleopControlRateHz;
         }
 
         Ur5ActualTcpMarker actualMarker = target.GetComponent<Ur5ActualTcpMarker>();
@@ -164,6 +166,7 @@ public static class Ur5AutoSceneBootstrap
                 speedlClient = bootstrap.gameObject.AddComponent<Ur5UrScriptSpeedlClient>();
             }
 
+            bootstrap.ApplyRealRobotSpeedlSafetyProfile(speedlClient);
             velocityTeleop.speedlClient = speedlClient;
         }
 
@@ -303,10 +306,18 @@ public static class Ur5AutoSceneBootstrap
         }
 
         workspaceLimiter.robotRoot = robotRoot;
-        workspaceLimiter.minimumLocalPosition = new Vector3(
-            workspaceLimiter.minimumLocalPosition.x,
-            0.05f,
-            workspaceLimiter.minimumLocalPosition.z);
+        Ur5ControlBootstrap bootstrap = Object.FindObjectOfType<Ur5ControlBootstrap>();
+        if (bootstrap != null)
+        {
+            bootstrap.ApplyWorkspaceSafetyProfile(workspaceLimiter);
+        }
+        else
+        {
+            workspaceLimiter.minimumLocalPosition = new Vector3(
+                workspaceLimiter.minimumLocalPosition.x,
+                Ur5ControlBootstrap.DefaultWorkspaceMinimumLocalHeightMeters,
+                workspaceLimiter.minimumLocalPosition.z);
+        }
 
         TcpTargetCollisionGuard collisionGuard = target.GetComponent<TcpTargetCollisionGuard>();
         if (collisionGuard == null)

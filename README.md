@@ -1,146 +1,148 @@
 # Quest 3 AR UR5 Teleoperation
 
-本项目当前目标是先把 Unity/Quest 3 端的机械臂预览控制做稳定，再扩展到真机 UR5 数据采集。当前控制链已按 Unity Robotics Hub pick-and-place 的思路重构：不要让手柄每帧直接推关节，而是先生成关节路点，再按固定节拍统一写入每个 `ArticulationBody.xDrive.target`。
+本项目用于在 Tuanjie/Unity 中构建 Quest 3 沉浸式 UR5 遥操作与数据采集预览环境。当前阶段仍以 Quest3 Build And Run 测试为主，真机 UR5 输出默认关闭，必须在完成空间标定、安全边界和低速联调后再开启。
 
-## 控制架构
+## 当前控制方案
+
+控制链路采用 UR10_Teleop/Open-Teach 风格的相对位姿离合：按下 Grip 时同时锚定右手柄位姿和当前 TCP 位姿，之后所有命令都由该锚点的相对变化推导，避免手柄静止时持续追赶旧目标。
 
 ```text
-Quest 3 手柄
+Quest 3 right controller
   -> Ur5CartesianVelocityTeleopController
-  -> TcpTarget 相对位姿目标
-  -> Ur5TcpTargetFollower 生成小步关节路点
-  -> Ur5JointTrajectoryPlayer 固定节拍播放路点
-  -> Ur5ArticulationJointController / ArticulationBody.xDrive.target
+  -> TcpTarget relative pose command
+  -> Ur5TcpTargetFollower IK / measured-state servo
+  -> ArticulationBody joint drive targets
 ```
 
-核心变化：
+### 手柄操作
 
-- `Ur5CartesianVelocityTeleopController` 只负责根据手柄输入移动 `TcpTarget`，默认使用 `RelativePoseTarget`，按下 grip 时锁定手柄起点和 TCP 起点。
-- `Ur5TcpTargetFollower` 不再到处直接调用 `AddJointTargetDegrees`，而是每次 IK step 只生成一个候选关节路点。
-- `Ur5JointTrajectoryPlayer` 负责像 Unity Robotics Hub 的 trajectory playback 一样，把关节路点按 `jointAssignmentIntervalSeconds` 固定写入 xDrive。
-- `QueueMode.LatestOnly` 会丢弃积压旧路点，只执行最新路点，避免 Quest 手柄噪声和帧率波动造成控制滞后。
+- **右手 Grip**：主平移离合。按住后移动右手柄，机械臂 TCP 跟随平移；松开后进入 deadman hold。
+- **右手 Grip + A**：稳定默认外翻下抓姿态。该模式只调姿态，不拖动 TCP 位置；无论先按 Grip 再按 A，还是同时按 Grip+A，都会进入同一个外翻下抓参考，避免腕部向内反。
+- **右手 Grip + B**：自由腕部/小臂姿态。该模式只调姿态，不拖动 TCP 位置；完整映射右手柄相对四元数，可用于横抓、侧抓、侧向伸入等非朝下抓取任务。
+- **右手 Trigger**：控制 Robotiq 夹爪开合，带死区和平滑滤波。
 
-## 是否符合主流流程
+推荐使用方式：普通采集任务优先用 **Grip 平移 + Grip+A 下抓姿态**；当需要横着夹、侧向接近或调整腕部俯仰/翻滚时，再按住 **Grip+B** 进入自由姿态。
 
-当前控制流程符合主流 XR/VR 机械臂遥操作的 Unity 预览阶段做法：输入层只产生目标 TCP 位姿或速度，控制层按固定周期限速执行，松手 deadman 停止，轨迹队列采用 latest-only，夹爪和 TCP 控制分离。
+## Quest3-Python-UR5 通信协议
 
-还不应直接视为真机生产级闭环控制。接入真机前必须补齐实际 TCP/关节反馈闭环、机器人侧速度/加速度/jerk 限制、急停/保护停止、工作空间与自碰撞约束、相机/基座/机器人坐标标定，以及数据集记录的时间同步。
-
-## 手柄操作
-
-- 右手 grip：移动两片 Robotiq 指腹中心的 TCP。
-- 左手 grip：用相对四元数控制夹爪姿态。上/下转动左手可连续改变夹爪朝上或朝下；右手平移不会串入姿态控制。
-- 当夹爪接近朝上或朝下（默认 32° 范围）时，系统自动吸附为精确竖直姿态，同时保留夹爪开口的水平朝向；之后右手移动会优先保持该姿态。
-- 左手 X：短按只将真实夹爪轴自动校准为竖直朝下；持续按住约 `0.45 s` 后，机械臂会以限速关节轨迹回到预抓取 Ready Pose（夹爪朝下、便于开始下一次抓取）。松开 X 会停在当前构型。左手 Y（按住）：冻结当前夹爪姿态；此时右手 grip 只控制平移，适合稳定地下探。
-- 右手位置输入在静止时会自动抑制约 `2.5 mm` 的 Quest 跟踪噪声；这只冻结 TCP 命令的微小漂移，不会屏蔽任何机械臂关节状态或数据采集。
-- TCP 相对 UR5 基座的最低安全高度为 `0.05 m`；若调整真实机器人或 AR 地面标定，必须重新确认该安全余量。
-- 右手 trigger：控制 Robotiq 夹爪开合，输入带死区和平滑滤波。
-- 右手 A 或 B：启动或中止抓取辅助流程；键盘 `G` 启动，`X` 中止。两键均可用，避免 Quest 构建中的 A/B 映射差异。
-- 松开右手 grip：进入 deadman idle hold，清空轨迹队列，并锁定当前关节姿态。
-- 抓取姿态不再假设 `tool0` 的轴向：运行时由“Robotiq 基座 → 两指中心”建立真实抓取坐标系，再标定到导入后的工具坐标系。
-- 场景中可见的绿色 `ActualTcp` 是真实的两指中心，会始终跟随夹爪；不可见的 `TcpTarget` 仅是 IK 命令目标，并被限制为最多领先真实 TCP `0.025m`。
-
-## Quest → PC 影子遥测（尚不控制真机）
-
-`Quest3UdpTeleopSender` 会把右手控制器在 Quest tracking frame 下的原始位姿、Grip、Trigger
-和单调递增序号以 UDP JSON 发送到 DG-VLA 采集电脑。它不会连接 UR 控制柜、不会发送
-URScript，也不会开启 `Ur5UrScriptSpeedlClient.enableRealRobotOutput`。
-
-使用前，在 `Ur5ControlBootstrap` Inspector 中：
-
-1. 填写 `questShadowReceiverHost` 为运行 DG-VLA 的电脑 IP；端口默认 `8080`。
-2. 勾选 `enableQuestUdpShadowTelemetry`，保持 `enableRealRobotOutput = false`。
-3. Quest Build & Run 后，PC 运行 DG-VLA 的 `shadow_teleop_ur5_quest3.py` 查看只读影子日志。
-
-Quest Android 构建需允许互联网访问（Unity Player Settings 的 Internet Access 设为 `Require`
-或确认其 `Auto` 配置已写入网络权限），否则 UDP 包无法离开头显。
-
-初期不要启用 `sendPrimaryButtonAsRecenter` 或 `sendSecondaryButtonAsStopEpisode`，因为 A/B
-当前仍用于 Unity 抓取辅助。UDP 只保留最新序号数据，丢失或乱序包不会被重放。
-
-## 抓取辅助
-
-`Ur5GraspAssistController` 将 GitHub Pick-and-Place 的抓取分段迁移到当前非 ROS 控制链：
+Stage 9.4 之后，Unity 不直接驱动真实 UR5。Quest3 应用只作为原始手柄输入发送端，Mac/Fedora 笔记本上的 Python bridge 才负责协议解析、安全过滤和真机执行。
 
 ```text
-选择 TCP 附近小物体
-  -> PreGrasp: 移到物体上方
-  -> Grasp: 沿上方接近方向垂直下探
-  -> Close: 暂停手柄夹爪输入并闭合夹爪
-  -> Lift: 抬升到安全高度
-  -> 交还手柄控制
+Quest3 Unity App
+  -> UDP packets, port 8080
+  -> Python bridge: scripts/teleop/quest3_ur5_openteach.py
+  -> OpenTeachTeleopTracker relative-pose mapping
+  -> SafeUr5Executor + Ur5SafetyFilter
+  -> VirtualTcpBackend / RtdeUr5Backend
+  -> UR5 controller through RTDE when real-robot is explicitly enabled
 ```
 
-- 默认自动选择 `TcpTarget` 附近 `0.50m` 内、尺寸小于 `0.35m` 的非机器人物体；若物体没有 Collider，会回退到最近的 Renderer。
-- 抓取辅助期间会暂停 `Ur5CartesianVelocityTeleopController.enableUnityPreview`，防止手柄输入和自动抓取目标互相打架。
-- 抓取辅助会固定工具朝下；将绿色 `ActualTcp` 靠近物体后，按 A 或 B 启动辅助。
-- 安全检查会阻止 TCP 目标进入机器人本体近距离区域，降低撞到自身手臂的风险。
+### 协议语义
+
+Unity 端发送 protocol v2 packet，字段含义由 `Quest3UdpTeleopSender` 维护，Python 端按同一 schema 解析。关键语义如下：
+
+- `mode=idle`：未按 Grip 或输入无效；Python bridge 不发送运动命令。
+- `mode=translate`：右手 Grip；只映射右手相对平移，保持当前姿态锁。
+- `mode=default_grasp`：右手 Grip+A；只调默认外翻下抓姿态，不拖动 TCP 位置。
+- `mode=free_wrist`：右手 Grip+B；只调自由腕部/小臂姿态，不拖动 TCP 位置。
+- `grip` / `clutch`：deadman 控制；松开后必须停止，不保持最后速度命令。
+- `trigger`：夹爪开闭输入，作为采集字段保留；真机运动安全不依赖 trigger。
+- `valid_controller_pose`、`valid_buttons`、`valid_tracking`：任一关键 valid flag 失效时，Python 端应 fail-closed。
+- `sequence`、`host_time_ns`：用于丢包、乱序、延迟和 CSV gate 检查。
+
+### Unity 端职责
+
+- 读取 Quest3 右手柄位姿、Grip、A、B、Trigger 和 tracking valid flags。
+- 按上述模式发送 UDP packet 到笔记本 IP 的 `8080` 端口。
+- 保留 Unity 内部 TCP/IK 预览和 `ur5_pose_log.csv`，用于 Quest3 侧调试。
+- 不在 Unity 内开启真实 UR5 输出；真实通信统一由 Python bridge 执行。
+
+### Python / 真机端职责
+
+- 接收 Quest3 UDP packet，并转为 `RobotCommand`。
+- 在 `SafeUr5Executor` 中执行 workspace、单步位移、角度、速度和异常门控。
+- `virtual-tcp` 后端只更新内部 TCP pose，不连接真实机器人。
+- `real-robot` 后端必须显式带 `--confirm-real-robot`，并通过 RTDE 向 UR5 发送低速 servo 命令。
+- 每次 gate 运行必须写 CSV，后续用 `validate_quest3_ur5_log.py` 生成验证报告。
 
 ## 关键脚本
 
-- `Assets/Scripts/UR5/Ur5CartesianVelocityTeleopController.cs`：Quest 输入、相对位姿预览、未来真机 `speedl` 速度命令源。
-- `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 误差到关节路点的局部求解器。
-- `Assets/Scripts/UR5/Ur5JointTrajectoryPlayer.cs`：关节路点队列和固定节拍 xDrive 写入。
-- `Assets/Scripts/UR5/Ur5GraspAssistController.cs`：半自动 PreGrasp/Grasp/Close/Lift 抓取辅助。
-- `Assets/Scripts/UR5/Ur5ArticulationJointController.cs`：UR5 六关节发现、drive 参数、批量关节目标写入。
-- `Assets/Scripts/UR5/Ur5UrScriptSpeedlClient.cs`：真机 URScript `speedl` 输出，默认关闭，需要显式 enable/arm。
-- `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：记录 TCP、关节目标、速度、轨迹队列状态和真机输出状态。
+- `Assets/Scripts/UR5/Ur5CartesianVelocityTeleopController.cs`：Quest 输入、Grip/A/B 离合状态机、相对位姿命令、CSV 诊断字段来源。
+- `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 目标到 UR5 关节目标的 IK/测量状态跟随器；Grip+A/Grip+B 调姿时会启用腕部优先。
+- `Assets/Scripts/UR5/Ur5ControlBootstrap.cs`：默认 Quest 遥操作参数配置入口，避免 Inspector 手动漏配。
+- `Assets/Scripts/UR5/Quest3RobotiqGripperController.cs`：右手 Trigger 到夹爪开合的输入映射。
+- `Assets/Scripts/UR5/Quest3UdpTeleopSender.cs`：Stage 9.4 Unity-Python 协议 v2 原始手柄发送端；只发送 Quest tracking-frame 位姿、Grip/A/B/Trigger、mode、valid flags、序号和时间戳，不直接控制真机。
+- `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：Quest 测试日志，记录 TCP、关节、IK、按键模式和限制状态。
+- `Assets/Tests/EditMode/Editor/Ur5Continuous6DofBootstrapTests.cs`：控制链关键行为的 EditMode 回归测试。
 
-## 推荐调参顺序
+## Quest3 测试流程
 
-先只在 Unity/Quest 里调稳定性，不连接真机：
+1. 在 Tuanjie 打开 `/Users/imi-1/Desktop/project/ur5`。
+2. Build And Run 到 Quest3。
+3. 在沉浸式界面中先测 **Grip 静止**：右手柄不动时机械臂不应晃动。
+4. 测 **Grip 平移**：确认跟手速度和停手即停。
+5. 测 **Grip+A**：确认能快速进入稳定下抓姿态，之后 Grip 平移时姿态不乱飘。
+6. 测 **Grip+B**：保持 TCP 位置，旋转右手柄，确认末端可以横抓/侧抓/自由调整腕部姿态。
+7. 拉取 `ur5_pose_log.csv` 后检查模式字段。
 
-1. 确认松开手柄时 `trajectory_pending_waypoints` 为 0，机械臂不应自发晃动。
-2. 当前默认是快速预览档：`relativePreviewPositionScale = 2.40`、`previewMaxLinearSpeed = 0.35`、`maxJointStepDegrees = 1.45`、`maxWristStepDegrees = 2.00`、`jointAssignmentIntervalSeconds = 0.016`。
-3. 默认双手参数：`positionControllerNode = RightHand`、`rotationControllerNode = LeftHand`、`rotationInputMode = ControllerPoseDelta`。右手位置、左手姿态彼此独立。
-4. 如果运动仍抖，优先降低 `Ur5TcpTargetFollower.maxJointStepDegrees` 和 `maxWristStepDegrees`，例如从 `1.45` / `2.00` 降到 `1.20` / `1.50`。
-5. 如果普通移动太灵敏，降低 `relativePreviewPositionScale`，例如从 `2.40` 降到 `1.80`。
-6. 如果跟随仍太慢，再小幅降低 `Ur5JointTrajectoryPlayer.jointAssignmentIntervalSeconds`，例如从 `0.016` 到 `0.014`。
-7. 如果手柄目标本身太慢，提高 `previewMaxLinearSpeed`，例如从 `0.35` 到 `0.45`。
-8. 抓取辅助默认以 `0.10 m/s`、`0.45 m/s²` 在预抓取、下探和抬升三段间插补。若需要更快，先提高 `assistMoveSpeed`，再谨慎提高 `assistMoveAcceleration`。
-9. 如果右手静止时仍有小幅抖动，先把 `controllerPositionJitterDeadbandMeters` 从 `0.0025` 提高到 `0.0035`；不要先提高 `linearDeadbandMeters`，后者只作用于 grip 起点附近。
-10. A/B 已保留给抓取辅助；如果普通移动太灵敏，降低 `relativePreviewPositionScale`。
+常用拉日志命令：
 
-## 真机扩展策略
+```zsh
+ADB="/Applications/Tuanjie/Hub/Editor/2022.3.62t11/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb"
+"$ADB" pull \
+  /sdcard/Android/data/com.dgvlalab.ur5quest/files/ur5_pose_log.csv \
+  /tmp/ur5_pose_log.csv
+tail -n 30 /tmp/ur5_pose_log.csv
+```
 
-Unity 阶段使用本地关节路点播放来稳定数字孪生；真机阶段不要直接照搬 Unity 的 ArticulationBody 状态。建议路径：
+关键 CSV 字段：
 
-- 保持 Quest 端生成稳定的 TCP 线速度/角速度命令。
-- 先用 `Ur5UrScriptSpeedlClient` 小速度、短周期、需 arm 的方式做真机验证。
-- 真机闭环必须接入 UR 实际 TCP/关节反馈，再用反馈刷新 Unity 数字孪生。
-- 真机输出默认关闭：`enableRealRobotOutput = false`，不要在人员靠近或工作空间未标定时开启。
+- `position_clutched` / `rotation_clutched`：Grip 控制是否处于离合状态。
+- `ur10_rotation_adjust_active`：Grip+A 默认下抓姿态是否激活。
+- `ur10_free_wrist_adjust_active`：Grip+B 自由腕部姿态是否激活。
+- `position_orientation_locked`：Grip 单独平移时姿态锁是否生效。
+- `preview_lead_limited` / `active_preview_lead_limit_m`：目标是否被实际 TCP 跟随距离限制截断。
+- `near_singularity` / `dls_min_pivot`：IK 是否接近奇异或数值不稳定区域。
+
+## 真机前安全约束
+
+当前项目仍是 Quest/Unity 预览优先。连接真实 UR5 前必须确认：
+
+- `Ur5UrScriptSpeedlClient.enableRealRobotOutput = false`，直到完成低速真机联调。
+- 人员远离机械臂工作空间，急停可触达。
+- UR5 基座、Quest tracking frame、桌面和相机坐标完成标定。
+- TCP 工作空间最低高度、桌面高度和夹爪几何与真实环境一致。
+- 先使用低速、小范围、无障碍动作验证 Grip、Grip+A、Grip+B，再做真实抓取。
+
+## 根目录文件说明
+
+- `Assets/`、`Packages/`、`ProjectSettings/`：Unity/Tuanjie 项目核心目录，需要保留并提交。
+- `Library/`、`Temp/`、`Logs/`、`UserSettings/`：Unity/Tuanjie 本地缓存和日志，已在 `.gitignore` 中忽略，不应提交。
+- `*.csproj`、`*.sln`：Unity/Tuanjie 为 C# IDE 自动生成的工程文件；它们便于 Rider/VSCode 跳转代码，通常可删除后由 Editor 再生成，本项目已通过 `.gitignore` 忽略。
+- `mono_crash.mem.*.blob`：Mono/Unity 崩溃内存转储，用于崩溃排查；不属于项目源码，已通过 `.gitignore` 忽略，可安全清理。
+- `.superpowers/`、`docs/superpowers/`：早期 Superpowers 工作流生成的计划/临时文件；当前 ur5 项目不依赖这些文件，已清理。
+- `RuntimeActionBindings.json`：Tuanjie/Unity 运行时动作绑定占位文件，当前由项目跟踪；若后续确认 Editor 会自动生成且场景不依赖，可再单独移除。
 
 ## 常见问题
 
-### 进入应用后不操作也晃
+### 按住 Grip 不动时机械臂晃动
 
-检查：
+优先检查 `ur5_pose_log.csv`：
 
-- `Ur5CartesianVelocityTeleopController.IsCommandActive` 应为 false。
-- `Ur5JointTrajectoryPlayer.PendingWaypointCount` 应为 0。
-- `Ur5TcpTargetFollower.pauseIkWhenVelocityTeleopIdle` 应为 true。
-- `useGripperPadCenter` 应为 false，避免夹爪开闭时 TCP 参考点变化带动机械臂补偿。
+- `position_clutched=1` 时，`raw_hand_*` 是否仍有明显变化。
+- `position_orientation_locked` 是否为 1。
+- `near_singularity` 是否为 1。
+- `preview_lead_limited` 是否频繁为 1。
 
-### 夹爪能动但机械臂不动
+### 控制不跟手
 
-检查：
+先确认不是安全限制导致：
 
-- `Ur5ControlBootstrap.enableCartesianVelocityTeleop` 是否开启。
-- Quest 控制器是否能读到 grip，Console 应显示 Quest position/rotation controller connected。
-- `TcpTarget` 是否存在，且被 `Ur5CartesianVelocityTeleopController.tcpPreviewTarget` 引用。
-- `Ur5JointTrajectoryPlayer` 是否挂在 UR5 robot root 上。
+- `preview_lead_limited=1` 且 `active_preview_lead_limit_m` 很小，说明目标被实际 TCP 跟随距离限制截断。
+- `near_singularity=1` 或 `dls_min_pivot` 很低，说明当前姿态接近 IK 奇异区域。
 
-### 运动有明显延迟
+### Grip+A 和 Grip+B 的区别
 
-检查：
-
-- `Ur5JointTrajectoryPlayer.queueMode` 应为 `LatestOnly`。
-- `maxQueuedWaypoints` 保持 1，不要让手柄历史输入排队。
-- `trajectory_pending_waypoints` 长时间大于 1 时，说明路点产生速度超过播放速度。
-
-## 参考项目
-
-- Unity Robotics Hub: <https://github.com/Unity-Technologies/Unity-Robotics-Hub>
-- 参考思路：`tutorials/pick_and_place/Scripts/TrajectoryPlanner.cs` 中的 trajectory execution，会逐个轨迹点把每个关节的 `xDrive.target` 更新为规划结果。
-- Unitree XR Teleoperate: <https://github.com/unitreerobotics/xr_teleoperate>
-- 参考思路：手柄模式下将 XR 控制器输入转换为限速运动命令；本项目默认锁定抓取姿态、以两指中心作为 TCP，并使用分段直线抓取轨迹，不引入 Unitree SDK。
+- Grip+A 是稳定下抓姿态，适合当前精密采集和桌面抓取。
+- Grip+B 是通用自由姿态，适合未来横抓、侧抓和更复杂腕部姿态。
+- 不建议把 Grip+A 改成完全自由姿态，因为它现在承担安全、稳定、可复现的默认抓取入口。

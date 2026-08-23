@@ -32,15 +32,7 @@ public class Ur5PhysicsStabilizer : MonoBehaviour
 
     private void Awake()
     {
-        if (robotRoot == null)
-        {
-            robotRoot = FindRobotRoot();
-        }
-
-        LockCurrentRootPose();
-
-        remainingReinforceFrames = reinforceFixedFrames;
-        Stabilize();
+        ConfigureRootAndStabilize(robotRoot);
     }
 
     private void FixedUpdate()
@@ -76,6 +68,19 @@ public class Ur5PhysicsStabilizer : MonoBehaviour
             lastRigidbodyCount = rigidbodies.Length;
             Debug.Log("UR5 physics stabilized. ArticulationBodies=" + articulationBodies.Length + ", Rigidbodies=" + rigidbodies.Length);
         }
+    }
+
+    public void ConfigureRootAndStabilize(Transform root)
+    {
+        robotRoot = root != null ? root : robotRoot;
+        if (robotRoot == null)
+        {
+            robotRoot = FindRobotRoot();
+        }
+
+        LockCurrentRootPose();
+        remainingReinforceFrames = reinforceFixedFrames;
+        Stabilize();
     }
 
     private Transform FindRobotRoot()
