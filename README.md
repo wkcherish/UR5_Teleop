@@ -17,11 +17,53 @@ Quest 3 right controller
 ### 手柄操作
 
 - **右手 Grip**：主平移离合。按住后移动右手柄，机械臂 TCP 跟随平移；松开后进入 deadman hold。
-- **右手 Grip + A**：稳定默认下抓姿态。该模式只调姿态，不拖动 TCP 位置；首次进入时使用机器人基座 forward 作为夹爪两指方向，避免腕部向内反。
+- **右手 Grip + A**：稳定默认外翻下抓姿态。该模式只调姿态，不拖动 TCP 位置；无论先按 Grip 再按 A，还是同时按 Grip+A，都会进入同一个外翻下抓参考，避免腕部向内反。
 - **右手 Grip + B**：自由腕部/小臂姿态。该模式只调姿态，不拖动 TCP 位置；完整映射右手柄相对四元数，可用于横抓、侧抓、侧向伸入等非朝下抓取任务。
 - **右手 Trigger**：控制 Robotiq 夹爪开合，带死区和平滑滤波。
 
 推荐使用方式：普通采集任务优先用 **Grip 平移 + Grip+A 下抓姿态**；当需要横着夹、侧向接近或调整腕部俯仰/翻滚时，再按住 **Grip+B** 进入自由姿态。
+
+## Quest3-Python-UR5 通信协议
+
+Stage 9.4 之后，Unity 不直接驱动真实 UR5。Quest3 应用只作为原始手柄输入发送端，Mac/Fedora 笔记本上的 Python bridge 才负责协议解析、安全过滤和真机执行。
+
+```text
+Quest3 Unity App
+  -> UDP packets, port 8080
+  -> Python bridge: scripts/teleop/quest3_ur5_openteach.py
+  -> OpenTeachTeleopTracker relative-pose mapping
+  -> SafeUr5Executor + Ur5SafetyFilter
+  -> VirtualTcpBackend / RtdeUr5Backend
+  -> UR5 controller through RTDE when real-robot is explicitly enabled
+```
+
+### 协议语义
+
+Unity 端发送 protocol v2 packet，字段含义由 `Quest3UdpTeleopSender` 维护，Python 端按同一 schema 解析。关键语义如下：
+
+- `mode=idle`：未按 Grip 或输入无效；Python bridge 不发送运动命令。
+- `mode=translate`：右手 Grip；只映射右手相对平移，保持当前姿态锁。
+- `mode=default_grasp`：右手 Grip+A；只调默认外翻下抓姿态，不拖动 TCP 位置。
+- `mode=free_wrist`：右手 Grip+B；只调自由腕部/小臂姿态，不拖动 TCP 位置。
+- `grip` / `clutch`：deadman 控制；松开后必须停止，不保持最后速度命令。
+- `trigger`：夹爪开闭输入，作为采集字段保留；真机运动安全不依赖 trigger。
+- `valid_controller_pose`、`valid_buttons`、`valid_tracking`：任一关键 valid flag 失效时，Python 端应 fail-closed。
+- `sequence`、`host_time_ns`：用于丢包、乱序、延迟和 CSV gate 检查。
+
+### Unity 端职责
+
+- 读取 Quest3 右手柄位姿、Grip、A、B、Trigger 和 tracking valid flags。
+- 按上述模式发送 UDP packet 到笔记本 IP 的 `8080` 端口。
+- 保留 Unity 内部 TCP/IK 预览和 `ur5_pose_log.csv`，用于 Quest3 侧调试。
+- 不在 Unity 内开启真实 UR5 输出；真实通信统一由 Python bridge 执行。
+
+### Python / 真机端职责
+
+- 接收 Quest3 UDP packet，并转为 `RobotCommand`。
+- 在 `SafeUr5Executor` 中执行 workspace、单步位移、角度、速度和异常门控。
+- `virtual-tcp` 后端只更新内部 TCP pose，不连接真实机器人。
+- `real-robot` 后端必须显式带 `--confirm-real-robot`，并通过 RTDE 向 UR5 发送低速 servo 命令。
+- 每次 gate 运行必须写 CSV，后续用 `validate_quest3_ur5_log.py` 生成验证报告。
 
 ## 关键脚本
 
