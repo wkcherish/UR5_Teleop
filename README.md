@@ -146,9 +146,3 @@ tail -n 30 /tmp/ur5_pose_log.csv
 - Grip+A 是稳定下抓姿态，适合当前精密采集和桌面抓取。
 - Grip+B 是通用自由姿态，适合未来横抓、侧抓和更复杂腕部姿态。
 - 不建议把 Grip+A 改成完全自由姿态，因为它现在承担安全、稳定、可复现的默认抓取入口。
-
-## 参考项目
-
-- Unity Robotics Hub: <https://github.com/Unity-Technologies/Unity-Robotics-Hub>
-- elpis-lab UR10_Teleop: <https://github.com/elpis-lab/UR10_Teleop>
-- Unitree XR Teleoperate: <https://github.com/unitreerobotics/xr_teleoperate>
