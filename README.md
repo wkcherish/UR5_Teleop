@@ -1,6 +1,6 @@
 # Quest 3 AR UR5 Teleoperation
 
-本项目用于在 Tuanjie/Unity 中构建 Quest 3 沉浸式 UR5 遥操作与数据采集预览环境。当前阶段仍以 Quest3 Build And Run 测试为主，真机 UR5 输出默认关闭，必须在完成空间标定、安全边界和低速联调后再开启。
+本项目用于在 Tuanjie/Unity 中构建 Quest 3 沉浸式 UR5 遥操作与数据采集预览环境。真机 UR5 输出默认关闭，必须在完成空间标定、安全边界和低速联调后再开启。
 
 ## 当前控制方案
 
@@ -25,7 +25,7 @@ Quest 3 right controller
 
 ## Quest3-Python-UR5 通信协议
 
-Stage 9.4 之后，Unity 不直接驱动真实 UR5。Quest3 应用只作为原始手柄输入发送端，Mac/Fedora 笔记本上的 Python bridge 才负责协议解析、安全过滤和真机执行。
+当前架构中，Unity 不直接驱动真实 UR5。Quest3 应用只作为原始手柄输入发送端，Mac/Fedora 笔记本上的 Python bridge 才负责协议解析、安全过滤和真机执行。
 
 ```text
 Quest3 Unity App
@@ -71,7 +71,7 @@ Unity 端发送 protocol v2 packet，字段含义由 `Quest3UdpTeleopSender` 维
 - `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 目标到 UR5 关节目标的 IK/测量状态跟随器；Grip+A/Grip+B 调姿时会启用腕部优先。
 - `Assets/Scripts/UR5/Ur5ControlBootstrap.cs`：默认 Quest 遥操作参数配置入口，避免 Inspector 手动漏配。
 - `Assets/Scripts/UR5/Quest3RobotiqGripperController.cs`：右手 Trigger 到夹爪开合的输入映射。
-- `Assets/Scripts/UR5/Quest3UdpTeleopSender.cs`：Stage 9.4 Unity-Python 协议 v2 原始手柄发送端；只发送 Quest tracking-frame 位姿、Grip/A/B/Trigger、mode、valid flags、序号和时间戳，不直接控制真机。
+- `Assets/Scripts/UR5/Quest3UdpTeleopSender.cs`：Unity-Python 协议 v2 原始手柄发送端；只发送 Quest tracking-frame 位姿、Grip/A/B/Trigger、mode、valid flags、序号和时间戳，不直接控制真机。
 - `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：Quest 测试日志，记录 TCP、关节、IK、按键模式和限制状态。
 - `Assets/Tests/EditMode/Editor/Ur5Continuous6DofBootstrapTests.cs`：控制链关键行为的 EditMode 回归测试。
 
@@ -106,7 +106,7 @@ tail -n 30 /tmp/ur5_pose_log.csv
 
 ## 真机前安全约束
 
-当前项目仍是 Quest/Unity 预览优先。连接真实 UR5 前必须确认：
+连接真实 UR5 前必须确认：
 
 - `Ur5UrScriptSpeedlClient.enableRealRobotOutput = false`，直到完成低速真机联调。
 - 人员远离机械臂工作空间，急停可触达。
