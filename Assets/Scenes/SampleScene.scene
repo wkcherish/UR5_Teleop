@@ -2500,7 +2500,7 @@ MonoBehaviour:
   showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
   disableLocalTeleopWhenQuestUdpShadowTelemetry: 0
-  questShadowReceiverHost: 192.168.10.96
+  questShadowReceiverHost: 10.93.172.144
   questShadowReceiverPort: 8080
   questShadowSendRateHz: 100
 --- !u!1 &218261879
