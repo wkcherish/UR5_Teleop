@@ -2470,7 +2470,7 @@ MonoBehaviour:
   m_GameObject: {fileID: 199771845}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e1b4baac6c66c4e8d827d259ec2a4ee6, type: 3}
+  m_Script: {fileID: 11500000, guid: 8c1b0d4e4f8e4d9a9b6c3f2a1d7e5b80, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   robotRoot: {fileID: 557929994}
@@ -2499,10 +2499,13 @@ MonoBehaviour:
   realRobotMaxOutputAngularAcceleration: 0.7
   showVirtualControllersInPassthrough: 1
   enableQuestUdpShadowTelemetry: 1
-  disableLocalTeleopWhenQuestUdpShadowTelemetry: 0
-  questShadowReceiverHost: 10.93.172.144
+  disableLocalTeleopWhenQuestUdpShadowTelemetry: 1
+  questShadowReceiverHost: ""
   questShadowReceiverPort: 8080
   questShadowSendRateHz: 100
+  enableRtdeJointStateFeedback: 1
+  rtdeJointStateFeedbackPort: 8081
+  hideRobotUntilRtdeFeedback: 1
 --- !u!1 &218261879
 GameObject:
   m_ObjectHideFlags: 0

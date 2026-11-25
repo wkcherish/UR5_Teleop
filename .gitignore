@@ -39,7 +39,17 @@ mono_crash.*.blob
 
 # Local tooling state
 .codely-cli/
+.codelyignore
 .com-unity-codely.json
+
+# Editor UI cache; package sources belong in Packages/manifest.json
+/ProjectSettings/PackageManagerSettings.asset
+
+# Meta XR build-generated input bindings
+/RuntimeActionBindings.json
+/Assets/StreamingAssets/RuntimeActionBindings.json
+/Assets/StreamingAssets/RuntimeActionBindings.json.meta
+/Assets/StreamingAssets.meta
 
 # Unity asset store tools
 AssetStoreTools*
@@ -57,3 +67,26 @@ consulo/
 # Visual Studio cache
 _ReSharper*/
 *.DotSettings.user
+
+# Python host and local robot/network configuration
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+robot/dist/
+robot/build/
+robot/config.local.json
+robot/*.local.json
+.env
+.env.*
+!.env.example
+
+# Local build verification and recordings
+.codex-build-check/
+*.jsonl
+ur5_pose_log*.csv
+*.keystore
+*.jks

@@ -1,148 +1,208 @@
-# Quest 3 AR UR5 Teleoperation
+# Quest 3 AR → UR5 Teleoperation
 
-本项目用于在 Tuanjie/Unity 中构建 Quest 3 沉浸式 UR5 遥操作与数据采集预览环境。真机 UR5 输出默认关闭，必须在完成空间标定、安全边界和低速联调后再开启。
-
-## 当前控制方案
-
-控制链路采用 UR10_Teleop/Open-Teach 风格的相对位姿离合：按下 Grip 时同时锚定右手柄位姿和当前 TCP 位姿，之后所有命令都由该锚点的相对变化推导，避免手柄静止时持续追赶旧目标。
+使用 Quest 3 透视画面和右手柄遥操作 UR5，并在头显中显示实测关节状态。Unity 应用、电脑控制程序、协议和构建入口均在本仓库内；无需其他训练或采集仓库、ROS、模型权重或额外编译通信桥。
 
 ```text
-Quest 3 right controller
-  -> Ur5CartesianVelocityTeleopController
-  -> TcpTarget relative pose command
-  -> Ur5TcpTargetFollower IK / measured-state servo
-  -> ArticulationBody joint drive targets
+Quest 3 APK ── UDP :8080 ──→ 电脑 Python 控制程序 ── RTDE ──→ UR5
+            ←─ UDP :8081 ── 实测关节状态                ←──────
 ```
 
-### 手柄操作
+电脑需要同时访问 Quest 和 UR5，推荐电脑通过有线网连接 UR5、Quest 通过局域网 Wi-Fi 访问电脑。电脑端程序需要在操作期间持续运行。
 
-- **右手 Grip**：主平移离合。按住后移动右手柄，机械臂 TCP 跟随平移；松开后进入 deadman hold。
-- **右手 Grip + A**：稳定默认外翻下抓姿态。该模式只调姿态，不拖动 TCP 位置；无论先按 Grip 再按 A，还是同时按 Grip+A，都会进入同一个外翻下抓参考，避免腕部向内反。
-- **右手 Grip + B**：自由腕部/小臂姿态。该模式只调姿态，不拖动 TCP 位置；完整映射右手柄相对四元数，可用于横抓、侧抓、侧向伸入等非朝下抓取任务。
-- **右手 Trigger**：控制 Robotiq 夹爪开合，带死区和平滑滤波。
+## 环境要求
 
-推荐使用方式：普通采集任务优先用 **Grip 平移 + Grip+A 下抓姿态**；当需要横着夹、侧向接近或调整腕部俯仰/翻滚时，再按住 **Grip+B** 进入自由姿态。
+**仓库根目录是团结工程。Windows、macOS、Linux 的标准 Unity 用户需要先导出标准 Unity 工程，再打开导出目录。** 导出工具不需要安装团结，也不修改源工程。
 
-## Quest3-Python-UR5 通信协议
+| 环境 | 编辑器版本 | 打开的目录 |
+| --- | --- | --- |
+| macOS / 团结 | `2022.3.62t11 / 1.9.3` | 仓库根目录 |
+| macOS / 标准 Unity | `2022.3.62f1` | 导出的 `quest-ur5-unity` |
+| Windows / 标准 Unity | `2022.3.62f1` | 导出的 `quest-ur5-unity` |
+| Linux / 标准 Unity | `2022.3.62f1` | 导出的 `quest-ur5-unity` |
 
-当前架构中，Unity 不直接驱动真实 UR5。Quest3 应用只作为原始手柄输入发送端，Mac/Fedora 笔记本上的 Python bridge 才负责协议解析、安全过滤和真机执行。
+请使用该 Unity 版本支持的操作系统环境。编辑器安装、导出和构建步骤见 [跨平台构建说明](docs/building.md)。
+
+- 头显：Quest 3、Touch Plus 手柄，开启开发者模式。
+- 电脑：Python ≥ 3.10，控制程序建议使用 **CPython 3.11**。真机依赖固定为 `ur-rtde==1.6.2`。
+- 真机：可通过网络访问的 UR5；Robotiq 夹爪可选。先使用虚拟后端检查通信，再接入真机。
+
+## 1. 构建 Quest 应用
+
+### 现有团结工程
+
+用团结 `2022.3.62t11` 打开仓库根目录，等待包恢复，打开 `Assets/Scenes/SampleScene.scene`。选择 **Quest UR5 → Validate Project**，通过后选择 **Quest UR5 → Build Quest APK**。
+
+### 标准 Unity（macOS / Linux / Windows）
+
+先安装 Python 3.10 或以上版本（电脑控制程序建议使用 3.11）。在仓库根目录运行；输出目录必须不存在且位于仓库外。
+
+macOS / Linux：
+
+```bash
+python3 tools/prepare_unity_project.py --output ../quest-ur5-unity
+```
+
+Windows PowerShell（已安装 Python 3.11）：
+
+```powershell
+py -3.11 tools/prepare_unity_project.py --output ../quest-ur5-unity
+```
+
+在 Unity Hub 中安装 `2022.3.62f1` 和 **Android Build Support、Android SDK & NDK Tools、OpenJDK**。在 Projects 中选择从磁盘添加项目，选择导出的 `quest-ur5-unity` 整个目录，等待包恢复。脚本转换团结的场景扩展名和序列化标签，使用固定的标准 Unity 包清单，保留资源 GUID 和主场景引用。不要直接用标准 Unity 打开未经转换的团结根工程。
+
+首次恢复包需要访问 Unity 和 Meta 包注册表。导出目录只包含 Unity 构建工程；电脑控制程序仍从原仓库的 `robot/` 安装和运行。后续 Unity 源码修改应在原仓库进行，再导出到新的目录。
+
+包恢复完成、Console 无编译错误后，打开 `Assets/Scenes/SampleScene.unity`，将构建平台设为 **Android**。选择 **Quest UR5 → Validate Project**，确认主场景脚本和 Android OpenXR 配置有效，再选择 **Quest UR5 → Build Quest APK**。构建入口会自动执行相同检查。首次导入后按 [跨平台构建说明](docs/building.md) 核对配置。
+
+### 安装 APK
+
+APK 输出到**当前打开的 Unity 工程**的 `Builds/quest-ur5.apk`，应用名称为 **Quest UR5 AR**，包名为 `com.questur5.teleop`。通过 USB 连接 Quest，在头显中允许 USB 调试，再使用 Android SDK 的 `adb` 检查设备：
+
+```bash
+adb devices
+```
+
+根据采用的工程执行对应安装命令。下列路径以**原仓库根目录**为工作目录，并假设使用上述默认导出目录：
+
+| APK 来源 | 安装命令 |
+| --- | --- |
+| 团结原工程 | `adb install -r Builds/quest-ur5.apk` |
+| 标准 Unity 导出工程 | `adb install -r ../quest-ur5-unity/Builds/quest-ur5.apk` |
+
+构建机和运行控制程序的电脑可以不同；后续修改网络 IP 不需要重建 APK。
+
+## 2. 安装电脑控制程序
+
+以下命令从本仓库根目录执行。
+
+macOS / Linux（已安装 Python 3.11）：
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ./robot
+```
+
+Windows PowerShell（不依赖虚拟环境激活脚本）：
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ./robot
+```
+
+下文的 `python` 在 Windows 下可替换为 `.\.venv\Scripts\python.exe`。
+
+## 3. 检查 Quest → 电脑通信
+
+macOS / Linux（已激活上述虚拟环境）：
+
+```bash
+python -m quest_ur5 --backend virtual
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m quest_ur5 --backend virtual
+```
+
+默认后端不连接真实机器人。保持电脑程序运行，启动头显中的 **Quest UR5 AR**。局域网应允许电脑接收 UDP `8080`、Quest 接收 UDP `8081`；详细网络要求见 [运行与标定](docs/operation.md)。
+
+戴上 Quest，在启动面板填写**运行该命令的电脑局域网 IPv4 地址**，默认端口 `8080`：
+
+- 左 **X**：编辑 IP；右摇杆左右选择数字、上下修改。
+- 右 **B**：保存并关闭面板；下次启动按左 **Y** 使用保存地址。
+- 左菜单键：打开/关闭面板。面板显示期间会禁止运动输入。
+
+先松开右 Grip，再按住并移动手柄。终端显示 `ready`、`moving`，松开后回到 `ready`。`logs/` 中的 JSONL 记录 TCP 目标与停止原因。
+
+虚拟后端仅验证 TCP 控制与通信，没有关节 IK，**不会伪造实测关节回传，头显中的机械臂模型保持隐藏**。查看终端与日志判断收包。真实 UR5 反馈到达后才显示模型，反馈超时再次隐藏。
+
+## 4. 连接真实 UR5
+
+macOS / Linux：安装 RTDE 依赖并复制配置。
+
+```bash
+python -m pip install -e "./robot[robot]"
+cp robot/config.example.json robot/config.local.json
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e "./robot[robot]"
+Copy-Item robot/config.example.json robot/config.local.json
+```
+
+配置文件首次创建时复制一次；已有本地配置时直接编辑。
+
+编辑 `robot/config.local.json`：
+
+- `robot_ip`：UR5 控制器地址；`quest_ip`：头显 Wi-Fi 地址。
+- `workspace_min/max`：按实际环境重新测定的基座坐标 TCP 边界，单位米。示例不是已标定安全区域。
+- `input_yaw_degrees`：佩戴者朝向与基座的航向偏差。默认 Quest 前方 → 机器人 +X、右方 → −Y、上方 → +Z。
+- 使用 Robotiq URCap TCP 服务时设 `gripper` 为 `robotiq`；否则保持 `disabled`。
+
+示教器上确认机器人已上电、解除保护停止并允许远程控制，TCP 和负载符合夹具，工作区无障碍且急停可触达。RTDE 自动上传控制脚本，不需要构建外部桥。网络与夹爪要求见 [运行与标定](docs/operation.md)。
+
+macOS / Linux：
+
+```bash
+python -m quest_ur5 --config robot/config.local.json --check-config
+python -m quest_ur5 --config robot/config.local.json --backend rtde --confirm-real-robot
+```
+
+Windows PowerShell：
+
+```powershell
+.\.venv\Scripts\python.exe -m quest_ur5 --config robot/config.local.json --check-config
+.\.venv\Scripts\python.exe -m quest_ur5 --config robot/config.local.json --backend rtde --confirm-real-robot
+```
+
+先以默认低速验证各方向，再扩大范围。启动、程序重启、追踪丢失、超时或故障后，都需要**松开 Grip 再重新按下**。`Ctrl+C` 停止控制并释放连接。
+
+## 手柄操作
+
+| 右手柄输入 | 行为 |
+| --- | --- |
+| 按住 Grip | 相对平移 TCP，锁定姿态 |
+| Grip + A | 固定 TCP 位置，保持向下抓取参考，仅调整水平航向 |
+| Grip + B | 固定 TCP 位置，自由调整相对姿态 |
+| Trigger（同时按 Grip） | Robotiq 开/合，默认阈值 0.5；需要启用夹爪后端 |
+| 松开 Grip | 停止机械臂和夹爪，下一次从实测 TCP 重新锚定 |
+
+## 结构与维护
 
 ```text
-Quest3 Unity App
-  -> UDP packets, port 8080
-  -> Python bridge: scripts/teleop/quest3_ur5_openteach.py
-  -> OpenTeachTeleopTracker relative-pose mapping
-  -> SafeUr5Executor + Ur5SafetyFilter
-  -> VirtualTcpBackend / RtdeUr5Backend
-  -> UR5 controller through RTDE when real-robot is explicitly enabled
+Assets/             Quest 输入、AR 显示、反馈模型、场景和构建入口
+Packages/           团结开发包配置与内嵌 URDF Importer
+ProjectSettings/    当前开发工程设置
+robot/              独立 Python 控制程序、配置示例和测试
+tools/              标准 Unity 导出工具和固定包清单
+docs/               构建、标定、协议与 development.md 开发说明
+third_party/        复用代码的来源说明和许可证
 ```
 
-### 协议语义
+日志、APK、缓存、虚拟环境、私有网络配置和签名密钥均不应提交。源码与 `.meta` 必须一起维护；保留内嵌 URDF Importer。
 
-Unity 端发送 protocol v2 packet，字段含义由 `Quest3UdpTeleopSender` 维护，Python 端按同一 schema 解析。关键语义如下：
+## 测试与文档
 
-- `mode=idle`：未按 Grip 或输入无效；Python bridge 不发送运动命令。
-- `mode=translate`：右手 Grip；只映射右手相对平移，保持当前姿态锁。
-- `mode=default_grasp`：右手 Grip+A；只调默认外翻下抓姿态，不拖动 TCP 位置。
-- `mode=free_wrist`：右手 Grip+B；只调自由腕部/小臂姿态，不拖动 TCP 位置。
-- `grip` / `clutch`：deadman 控制；松开后必须停止，不保持最后速度命令。
-- `trigger`：夹爪开闭输入，作为采集字段保留；真机运动安全不依赖 trigger。
-- `valid_controller_pose`、`valid_buttons`、`valid_tracking`：任一关键 valid flag 失效时，Python 端应 fail-closed。
-- `sequence`、`host_time_ns`：用于丢包、乱序、延迟和 CSV gate 检查。
+已在开发 Mac 上通过 **52 项 Python 控制程序测试、18 项导出工具测试、113 项 Unity EditMode 测试**，以及本机 UDP 虚拟后端检查、标准 Unity 源工程导出检查和团结 Android ARM64 / IL2CPP APK 构建。
 
-### Unity 端职责
+[自动化工作流](.github/workflows/host-tests.yml) 配置了 Windows、macOS、Linux 的 Python 测试与源工程导出检查，不执行 Unity APK 构建。
 
-- 读取 Quest3 右手柄位姿、Grip、A、B、Trigger 和 tracking valid flags。
-- 按上述模式发送 UDP packet 到笔记本 IP 的 `8080` 端口。
-- 保留 Unity 内部 TCP/IK 预览和 `ur5_pose_log.csv`，用于 Quest3 侧调试。
-- 不在 Unity 内开启真实 UR5 输出；真实通信统一由 Python bridge 执行。
+安装开发依赖后可运行以下检查；Windows 使用上述虚拟环境的 Python 可执行文件替代 `python`：
 
-### Python / 真机端职责
-
-- 接收 Quest3 UDP packet，并转为 `RobotCommand`。
-- 在 `SafeUr5Executor` 中执行 workspace、单步位移、角度、速度和异常门控。
-- `virtual-tcp` 后端只更新内部 TCP pose，不连接真实机器人。
-- `real-robot` 后端必须显式带 `--confirm-real-robot`，并通过 RTDE 向 UR5 发送低速 servo 命令。
-- 每次 gate 运行必须写 CSV，后续用 `validate_quest3_ur5_log.py` 生成验证报告。
-
-## 关键脚本
-
-- `Assets/Scripts/UR5/Ur5CartesianVelocityTeleopController.cs`：Quest 输入、Grip/A/B 离合状态机、相对位姿命令、CSV 诊断字段来源。
-- `Assets/Scripts/UR5/Ur5TcpTargetFollower.cs`：TCP 目标到 UR5 关节目标的 IK/测量状态跟随器；Grip+A/Grip+B 调姿时会启用腕部优先。
-- `Assets/Scripts/UR5/Ur5ControlBootstrap.cs`：默认 Quest 遥操作参数配置入口，避免 Inspector 手动漏配。
-- `Assets/Scripts/UR5/Quest3RobotiqGripperController.cs`：右手 Trigger 到夹爪开合的输入映射。
-- `Assets/Scripts/UR5/Quest3UdpTeleopSender.cs`：Unity-Python 协议 v2 原始手柄发送端；只发送 Quest tracking-frame 位姿、Grip/A/B/Trigger、mode、valid flags、序号和时间戳，不直接控制真机。
-- `Assets/Scripts/UR5/Ur5PoseCsvRecorder.cs`：Quest 测试日志，记录 TCP、关节、IK、按键模式和限制状态。
-- `Assets/Tests/EditMode/Editor/Ur5Continuous6DofBootstrapTests.cs`：控制链关键行为的 EditMode 回归测试。
-
-## Quest3 测试流程
-
-1. 在 Tuanjie 打开 `/Users/imi-1/Desktop/project/ur5`。
-2. Build And Run 到 Quest3。
-3. 在沉浸式界面中先测 **Grip 静止**：右手柄不动时机械臂不应晃动。
-4. 测 **Grip 平移**：确认跟手速度和停手即停。
-5. 测 **Grip+A**：确认能快速进入稳定下抓姿态，之后 Grip 平移时姿态不乱飘。
-6. 测 **Grip+B**：保持 TCP 位置，旋转右手柄，确认末端可以横抓/侧抓/自由调整腕部姿态。
-7. 拉取 `ur5_pose_log.csv` 后检查模式字段。
-
-常用拉日志命令：
-
-```zsh
-ADB="/Applications/Tuanjie/Hub/Editor/2022.3.62t11/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb"
-"$ADB" pull \
-  /sdcard/Android/data/com.dgvlalab.ur5quest/files/ur5_pose_log.csv \
-  /tmp/ur5_pose_log.csv
-tail -n 30 /tmp/ur5_pose_log.csv
+```bash
+python -m pip install -e "./robot[dev]"
+python -m pytest robot/tests tools/tests
+python -m ruff check robot
+python -m ruff check --config robot/pyproject.toml tools
 ```
 
-关键 CSV 字段：
+- [跨平台构建](docs/building.md)：导出、编辑器安装、配置检查和命令行构建。
+- [运行与标定](docs/operation.md)：网络、机器人与夹爪配置、坐标标定、故障恢复。
+- [架构与协议](docs/architecture.md)：输入、控制程序、反馈和维护边界。
+- [开发与维护](docs/development.md)：资源组织、GUID 规范和本地生成文件。
 
-- `position_clutched` / `rotation_clutched`：Grip 控制是否处于离合状态。
-- `ur10_rotation_adjust_active`：Grip+A 默认下抓姿态是否激活。
-- `ur10_free_wrist_adjust_active`：Grip+B 自由腕部姿态是否激活。
-- `position_orientation_locked`：Grip 单独平移时姿态锁是否生效。
-- `preview_lead_limited` / `active_preview_lead_limit_m`：目标是否被实际 TCP 跟随距离限制截断。
-- `near_singularity` / `dls_min_pivot`：IK 是否接近奇异或数值不稳定区域。
-
-## 真机前安全约束
-
-连接真实 UR5 前必须确认：
-
-- `Ur5UrScriptSpeedlClient.enableRealRobotOutput = false`，直到完成低速真机联调。
-- 人员远离机械臂工作空间，急停可触达。
-- UR5 基座、Quest tracking frame、桌面和相机坐标完成标定。
-- TCP 工作空间最低高度、桌面高度和夹爪几何与真实环境一致。
-- 先使用低速、小范围、无障碍动作验证 Grip、Grip+A、Grip+B，再做真实抓取。
-
-## 根目录文件说明
-
-- `Assets/`、`Packages/`、`ProjectSettings/`：Unity/Tuanjie 项目核心目录，需要保留并提交。
-- `Library/`、`Temp/`、`Logs/`、`UserSettings/`：Unity/Tuanjie 本地缓存和日志，已在 `.gitignore` 中忽略，不应提交。
-- `*.csproj`、`*.sln`：Unity/Tuanjie 为 C# IDE 自动生成的工程文件；它们便于 Rider/VSCode 跳转代码，通常可删除后由 Editor 再生成，本项目已通过 `.gitignore` 忽略。
-- `mono_crash.mem.*.blob`：Mono/Unity 崩溃内存转储，用于崩溃排查；不属于项目源码，已通过 `.gitignore` 忽略，可安全清理。
-- `.superpowers/`、`docs/superpowers/`：早期 Superpowers 工作流生成的计划/临时文件；当前 ur5 项目不依赖这些文件，已清理。
-- `RuntimeActionBindings.json`：Tuanjie/Unity 运行时动作绑定占位文件，当前由项目跟踪；若后续确认 Editor 会自动生成且场景不依赖，可再单独移除。
-
-## 常见问题
-
-### 按住 Grip 不动时机械臂晃动
-
-优先检查 `ur5_pose_log.csv`：
-
-- `position_clutched=1` 时，`raw_hand_*` 是否仍有明显变化。
-- `position_orientation_locked` 是否为 1。
-- `near_singularity` 是否为 1。
-- `preview_lead_limited` 是否频繁为 1。
-
-### 控制不跟手
-
-先确认不是安全限制导致：
-
-- `preview_lead_limited=1` 且 `active_preview_lead_limit_m` 很小，说明目标被实际 TCP 跟随距离限制截断。
-- `near_singularity=1` 或 `dls_min_pivot` 很低，说明当前姿态接近 IK 奇异区域。
-
-### Grip+A 和 Grip+B 的区别
-
-- Grip+A 是稳定下抓姿态，适合当前精密采集和桌面抓取。
-- Grip+B 是通用自由姿态，适合未来横抓、侧抓和更复杂腕部姿态。
-- 不建议把 Grip+A 改成完全自由姿态，因为它现在承担安全、稳定、可复现的默认抓取入口。
+`third_party/teleoperation/` 保存部分复用算法的 [来源与改动说明](third_party/teleoperation/NOTICE) 和 [Apache 2.0 许可证](third_party/teleoperation/LICENSE)，不参与程序运行。Meta XR 和 URDF Importer 遵循各自许可。

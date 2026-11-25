@@ -1,0 +1,21 @@
+name: Host and portable Unity source
+on:
+  push:
+  pull_request:
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e "./robot[dev]"
+      - run: python -m ruff check robot
+      - run: python -m ruff check --config robot/pyproject.toml tools
+      - run: python -m pytest robot/tests tools/tests
+      - run: python tools/prepare_unity_project.py --output "${{ runner.temp }}/quest-ur5-unity"

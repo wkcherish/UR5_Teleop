@@ -1,17 +1,11 @@
 {
   "dependencies": {
-    "cn.tuanjie.ai.generators": "file:../.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators",
-    "cn.tuanjie.codely.bridge": "1.0.70",
-    "cn.unity.uos.launcher": "https://cnb.cool/unity/uos/UOSLauncher.git",
     "com.meta.xr.sdk.core": "69.0.0",
-    "com.unity.collab-proxy": "2.12.4",
-    "com.unity.feature.development": "1.0.1",
     "com.unity.robotics.urdf-importer": "file:com.unity.robotics.urdf-importer",
+    "com.unity.test-framework": "1.1.33",
     "com.unity.textmeshpro": "3.0.9",
-    "com.unity.timeline": "1.7.7",
     "com.unity.toolchain.macos-arm64-linux-x86_64": "2.1.0",
     "com.unity.ugui": "1.0.0",
-    "com.unity.visualscripting": "1.9.4",
     "com.unity.xr.management": "4.4.1",
     "com.unity.xr.openxr": "1.14.4-t2",
     "com.unity.modules.ai": "1.0.0",
@@ -23,7 +17,6 @@
     "com.unity.modules.director": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",
     "com.unity.modules.imgui": "1.0.0",
-    "com.unity.modules.infinity": "1.0.0",
     "com.unity.modules.jsonserialize": "1.0.0",
     "com.unity.modules.particlesystem": "1.0.0",
     "com.unity.modules.physics": "1.0.0",
@@ -45,5 +38,14 @@
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0"
-  }
+  },
+  "scopedRegistries": [
+    {
+      "name": "Meta XR",
+      "url": "https://npm.developer.oculus.com",
+      "scopes": [
+        "com.meta.xr"
+      ]
+    }
+  ]
 }

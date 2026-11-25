@@ -1,0 +1,11 @@
+Quest 3 / UR5 teleoperation portions adapted from
+https://github.com/wkcherish/dg-vla-pi0.5
+Reference revision: d027eb442764cc3b2690870df05b2ce745147eaa
+License: Apache License 2.0 (included alongside this notice).
+
+Source files: src/openpi/robot/teleop/quest3_ur5.py,
+src/openpi/robot/safety/ur5.py, src/openpi/robot/executor/robotiq.py.
+Modified for this standalone project: removed dataset, policy and OpenPI
+integration; added strict v2 protocol, explicit startup/recovery interlock,
+configuration, paced transport, RTDE lifecycle, feedback and regression tests.
+The reference repository is read-only and is not a runtime dependency.

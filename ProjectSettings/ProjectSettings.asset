@@ -13,8 +13,8 @@ PlayerSettings:
   targetDevice: 2
   useOnDemandResources: 0
   accelerometerFrequency: 60
-  companyName: DGVLA Lab
-  productName: DG-VLA UR5 Quest
+  companyName: Quest UR5
+  productName: Quest UR5 AR
   defaultCursor: {fileID: 0}
   cursorHotspot: {x: 0, y: 0}
   m_SplashScreenBackgroundColor: {r: 0.13725491, g: 0.12156863, b: 0.1254902, a: 1}
@@ -42,7 +42,7 @@ PlayerSettings:
     height: 1
   m_SplashScreenLogos: []
   m_VirtualRealitySplashScreen: {fileID: 0}
-  expectedBundleIdentifier: com.dgvlalab.ur5quest
+  expectedBundleIdentifier: com.questur5.teleop
   integrityHash: 
   m_HolographicTrackingLossScreen: {fileID: 0}
   defaultScreenWidth: 1920
@@ -199,7 +199,7 @@ PlayerSettings:
   androidSupportedAspectRatio: 1
   androidMaxAspectRatio: 2.1
   applicationIdentifier:
-    Android: com.dgvlalab.ur5quest
+    Android: com.questur5.teleop
   buildNumber:
     Standalone: 0
     VisionOS: 0
@@ -208,13 +208,13 @@ PlayerSettings:
   overrideDefaultApplicationIdentifier: 1
   AndroidBundleVersionCode: 2
   AndroidMinSdkVersion: 29
-  AndroidTargetSdkVersion: 32
+  AndroidTargetSdkVersion: 0
   AndroidPreferredInstallLocation: 0
   aotOptions: 
   stripEngineCode: 1
   iPhoneStrippingLevel: 0
   iPhoneScriptCallOptimization: 0
-  ForceInternetPermission: 0
+  ForceInternetPermission: 1
   ForceSDCardPermission: 0
   CreateWallpaper: 0
   APKExpansionFiles: 0
@@ -803,15 +803,15 @@ PlayerSettings:
   webGLMemoryGeometricGrowthCap: 96
   webGLPowerPreference: 2
   scriptingDefineSymbols:
-    Android: UNITY_UOS_SECURITY;USE_INPUT_SYSTEM_POSE_CONTROL;USE_STICK_CONTROL_THUMBSTICKS
-    HMIAndroid: UNITY_UOS_SECURITY
-    OpenHarmony: UNITY_UOS_SECURITY
-    Server: UNITY_UOS_SECURITY
-    Standalone: UNITY_UOS_SECURITY;USE_INPUT_SYSTEM_POSE_CONTROL;USE_STICK_CONTROL_THUMBSTICKS
-    WebGL: UNITY_UOS_SECURITY
-    WeixinMiniGame: UNITY_UOS_SECURITY
+    Android: USE_INPUT_SYSTEM_POSE_CONTROL;USE_STICK_CONTROL_THUMBSTICKS
+    HMIAndroid: ""
+    OpenHarmony: ""
+    Server: ""
+    Standalone: USE_INPUT_SYSTEM_POSE_CONTROL;USE_STICK_CONTROL_THUMBSTICKS
+    WebGL: ""
+    WeixinMiniGame: ""
     Windows Store Apps: USE_INPUT_SYSTEM_POSE_CONTROL;USE_STICK_CONTROL_THUMBSTICKS
-    iPhone: UNITY_UOS_SECURITY
+    iPhone: ""
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:

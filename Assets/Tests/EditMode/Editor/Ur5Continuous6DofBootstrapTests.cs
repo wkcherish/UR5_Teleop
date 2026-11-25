@@ -1097,7 +1097,7 @@ public class Ur5Continuous6DofBootstrapTests
     }
 
     [Test]
-    public void Ur10StylePreview_MapsControllerRotationToTcpRotation()
+    public void Ur10StylePreview_ControllerPoseModeKeepsDownwardGraspAndMapsYaw()
     {
         GameObject owner = new GameObject("ur10-style-rotation-test");
         GameObject target = new GameObject("TcpTarget");
@@ -1125,12 +1125,13 @@ public class Ur5Continuous6DofBootstrapTests
                 Vector3.zero,
                 true,
                 Quaternion.identity);
+            Quaternion downwardReference = target.transform.rotation;
             SetUr10StyleLatestPose(teleop, Vector3.zero, controllerRotation);
             InvokeNonPublic(teleop, "ApplyUr10StyleAnchoredPosePreview");
 
-            Quaternion expectedRotation = controllerRotation * startRotation;
             AssertVectorNear(startPosition, target.transform.position, 0.000001f);
-            Assert.LessOrEqual(Quaternion.Angle(expectedRotation, target.transform.rotation), 0.0001f);
+            AssertVectorNear(Vector3.down, target.transform.forward, 0.000001f);
+            Assert.AreEqual(30.0f, Quaternion.Angle(downwardReference, target.transform.rotation), 0.0001f);
         }
         finally
         {
@@ -1285,6 +1286,8 @@ public class Ur5Continuous6DofBootstrapTests
     [Test]
     public void ControlBootstrap_QuestUdpShadowTelemetryKeepsLocalControlByDefault()
     {
+        PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey);
+        PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey);
         GameObject owner = new GameObject("udp-shadow-bootstrap-test");
         GameObject robot = new GameObject("udp-shadow-robot");
         GameObject target = new GameObject("TcpTarget");
@@ -1310,6 +1313,7 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsTrue(sender.sendPackets);
             Assert.AreEqual("192.168.10.37", sender.receiverHost);
             Assert.AreEqual(8080, sender.receiverPort);
+            Assert.IsNotNull(owner.GetComponent<Quest3UdpEndpointRuntimePanel>());
             var stabilizer = owner.GetComponent<Ur5PhysicsStabilizer>();
             Assert.IsNotNull(stabilizer, "UDP bridge mode must still stabilize the Unity robot model.");
             Assert.AreSame(robot.transform, stabilizer.robotRoot);
@@ -1326,6 +1330,129 @@ public class Ur5Continuous6DofBootstrapTests
             UnityEngine.Object.DestroyImmediate(robot);
             UnityEngine.Object.DestroyImmediate(target);
         }
+    }
+
+    [Test]
+    public void ControlBootstrap_SavedRuntimeQuestUdpEndpointOverridesSceneHost()
+    {
+        PlayerPrefs.SetString(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey, "10.93.172.144");
+        PlayerPrefs.SetInt(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey, 8080);
+        GameObject owner = new GameObject("udp-saved-endpoint-bootstrap-test");
+        GameObject robot = new GameObject("udp-saved-endpoint-robot");
+        GameObject target = new GameObject("TcpTarget");
+        owner.SetActive(false);
+        try
+        {
+            var bootstrap = owner.AddComponent<Ur5ControlBootstrap>();
+            bootstrap.robotRoot = robot.transform;
+            bootstrap.tcpTarget = target.transform;
+            bootstrap.enableQuestUdpShadowTelemetry = true;
+            bootstrap.questShadowReceiverHost = "192.168.10.37";
+            bootstrap.questShadowReceiverPort = 8080;
+            bootstrap.enableCartesianVelocityTeleop = false;
+            bootstrap.enableKeyboardControl = false;
+            bootstrap.enableQuest3Control = false;
+            bootstrap.enableTcpTargetFollower = false;
+            bootstrap.addUrScriptSpeedlClient = false;
+
+            InvokeNonPublic(bootstrap, "Awake");
+
+            var sender = owner.GetComponent<Quest3UdpTeleopSender>();
+            Assert.IsNotNull(sender);
+            Assert.IsTrue(sender.sendPackets);
+            Assert.AreEqual("10.93.172.144", sender.receiverHost);
+            Assert.AreEqual(8080, sender.receiverPort);
+            Assert.IsNotNull(owner.GetComponent<Quest3UdpEndpointRuntimePanel>());
+        }
+        finally
+        {
+            PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey);
+            PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey);
+            UnityEngine.Object.DestroyImmediate(owner);
+            UnityEngine.Object.DestroyImmediate(robot);
+            UnityEngine.Object.DestroyImmediate(target);
+        }
+    }
+
+    [Test]
+    public void QuestUdpEndpointRuntimePanel_ApplyEndpointSavesAndEnablesSender()
+    {
+        PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey);
+        PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey);
+        GameObject owner = new GameObject("udp-runtime-panel-test");
+        try
+        {
+            var sender = owner.AddComponent<Quest3UdpTeleopSender>();
+            sender.receiverHost = "192.168.10.37";
+            sender.receiverPort = 8080;
+            sender.sendPackets = false;
+
+            var panel = owner.AddComponent<Quest3UdpEndpointRuntimePanel>();
+            panel.sender = sender;
+            panel.fallbackReceiverHost = sender.receiverHost;
+            panel.fallbackReceiverPort = sender.receiverPort;
+            panel.createUiOnStart = false;
+
+            Assert.IsTrue(panel.ApplyEndpoint("10.93.172.144", 8080, true, false));
+
+            Assert.IsTrue(sender.sendPackets);
+            Assert.AreEqual("10.93.172.144", sender.receiverHost);
+            Assert.AreEqual(8080, sender.receiverPort);
+            Assert.AreEqual("10.93.172.144", PlayerPrefs.GetString(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey));
+            Assert.AreEqual(8080, PlayerPrefs.GetInt(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey));
+        }
+        finally
+        {
+            PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverHostPrefsKey);
+            PlayerPrefs.DeleteKey(Quest3UdpEndpointRuntimePanel.ReceiverPortPrefsKey);
+            UnityEngine.Object.DestroyImmediate(owner);
+        }
+    }
+
+    [Test]
+    public void QuestUdpEndpointRuntimePanel_ParsesAndAdjustsControllerEditableIpv4Digits()
+    {
+        int[] octets = new int[4];
+
+        Assert.IsTrue(Quest3UdpEndpointRuntimePanel.TryParseIpv4Octets("10.93.172.144", octets));
+        CollectionAssert.AreEqual(new[] { 10, 93, 172, 144 }, octets);
+        Assert.AreEqual("10.93.172.144", Quest3UdpEndpointRuntimePanel.FormatIpv4Octets(octets));
+
+        Assert.AreEqual(193, Quest3UdpEndpointRuntimePanel.AdjustIpv4Digit(93, 0, 1));
+        Assert.AreEqual(103, Quest3UdpEndpointRuntimePanel.AdjustIpv4Digit(93, 1, 1));
+        Assert.AreEqual(94, Quest3UdpEndpointRuntimePanel.AdjustIpv4Digit(93, 2, 1));
+        Assert.AreEqual(255, Quest3UdpEndpointRuntimePanel.AdjustIpv4Digit(252, 1, 1));
+        Assert.AreEqual(0, Quest3UdpEndpointRuntimePanel.AdjustIpv4Digit(3, 2, -5));
+        Assert.IsFalse(Quest3UdpEndpointRuntimePanel.TryParseIpv4Octets("10.93.172.999", octets));
+    }
+
+    [Test]
+    public void QuestUdpEndpointRuntimePanel_ControllerShortcutMappingUsesRequestedQuestButtons()
+    {
+        Assert.AreEqual(
+            Quest3UdpEndpointRuntimePanel.EndpointShortcutAction.ResetEndpoint,
+            Quest3UdpEndpointRuntimePanel.ResolveEndpointShortcutAction(
+                leftXPressed: true,
+                leftYPressed: false,
+                rightBPressed: false));
+        Assert.AreEqual(
+            Quest3UdpEndpointRuntimePanel.EndpointShortcutAction.ConfirmEditedEndpoint,
+            Quest3UdpEndpointRuntimePanel.ResolveEndpointShortcutAction(
+                leftXPressed: false,
+                leftYPressed: false,
+                rightBPressed: true));
+        Assert.AreEqual(
+            Quest3UdpEndpointRuntimePanel.EndpointShortcutAction.ContinueWithSavedEndpoint,
+            Quest3UdpEndpointRuntimePanel.ResolveEndpointShortcutAction(
+                leftXPressed: false,
+                leftYPressed: true,
+                rightBPressed: false));
+        Assert.AreEqual(
+            Quest3UdpEndpointRuntimePanel.EndpointShortcutAction.ResetEndpoint,
+            Quest3UdpEndpointRuntimePanel.ResolveEndpointShortcutAction(
+                leftXPressed: true,
+                leftYPressed: true,
+                rightBPressed: true));
     }
 
     [Test]
@@ -1369,7 +1496,9 @@ public class Ur5Continuous6DofBootstrapTests
             Assert.IsNotNull(owner.GetComponent<Ur5PhysicsStabilizer>());
             Assert.IsNull(owner.GetComponent<Ur5CartesianVelocityTeleopController>());
             Assert.IsNull(owner.GetComponent<Ur5UrScriptSpeedlClient>());
-            Assert.IsNull(robot.GetComponent<Quest3RobotiqGripperController>());
+            var feedbackGripper = robot.GetComponent<Quest3RobotiqGripperController>();
+            Assert.IsNotNull(feedbackGripper, "Feedback rendering needs the gripper component.");
+            Assert.IsFalse(feedbackGripper.useTrigger, "Feedback mode must disable local trigger writes.");
             Assert.IsNull(robot.GetComponent<Ur5TcpTargetFollower>());
             Assert.IsNull(target.GetComponent<TcpTargetKeyboardController>());
             Assert.IsNull(target.GetComponent<Quest3TcpTargetController>());

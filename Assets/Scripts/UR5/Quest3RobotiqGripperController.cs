@@ -91,6 +91,18 @@ public class Quest3RobotiqGripperController : MonoBehaviour
         filteredTriggerAmount = targetCloseAmount;
     }
 
+    /// <summary>
+    /// Applies a normalized command received from the real-robot bridge.
+    /// This bypasses Quest input while retaining the same visual joint model.
+    /// </summary>
+    public void SetFeedbackCloseAmount(float closeAmount)
+    {
+        currentCloseAmount = Mathf.Clamp01(closeAmount);
+        targetCloseAmount = currentCloseAmount;
+        filteredTriggerAmount = currentCloseAmount;
+        ApplyCloseAmount(currentCloseAmount);
+    }
+
     public void OpenGripper()
     {
         SetTargetCloseAmount(0.0f);

@@ -70,15 +70,28 @@ public class Ur5ControlBootstrap : MonoBehaviour
     [Tooltip("默认隐藏 Unity 虚拟手柄，直接使用 Passthrough 中可见的真实 Quest 手柄。不会影响控制输入或遥测。")]
     public bool showVirtualControllersInPassthrough = false;
 
+    [Header("Quest 后台控制")]
+    [Tooltip("允许后台继续运行 Unity 网络循环。真实运动仍由佩戴状态、追踪有效性和 Grip 门控。")]
+    public bool keepQuestControlRunningWhenHeadsetRemoved = false;
+
     [Header("Quest UDP PC Teleop")]
-    [Tooltip("Sends raw Quest controller telemetry to the DG-VLA PC. The Quest app never enables or commands the real robot directly.")]
+    [Tooltip("Sends raw Quest input to this repository's standalone control host.")]
     public bool enableQuestUdpShadowTelemetry;
     [Tooltip("Optional debug mode: when enabled, Quest only sends UDP telemetry and all Unity-side TCP/IK/gripper/speedl writers are disabled.")]
     public bool disableLocalTeleopWhenQuestUdpShadowTelemetry = false;
-    [Tooltip("IP address of the DG-VLA capture computer. If this is filled, UDP sending is enabled even when the legacy shadow flag is false.")]
+    [Tooltip("IP address of the computer running python -m quest_ur5. The runtime panel can override it.")]
     public string questShadowReceiverHost = "";
     public int questShadowReceiverPort = 8080;
     public float questShadowSendRateHz = 100.0f;
+    [Header("RTDE Digital Twin Feedback")]
+    [Tooltip("Listen for measured UR5 joint feedback from the Python bridge and drive the Unity model from it.")]
+    public bool enableRtdeJointStateFeedback = true;
+    [Tooltip("Must equal Python --quest-feedback-port.")]
+    public int rtdeJointStateFeedbackPort = 8081;
+    public bool hideRobotUntilRtdeFeedback = true;
+    [Tooltip("Shows a Quest-side runtime panel for changing and saving the PC UDP receiver IP without rebuilding the app.")]
+    public bool enableQuestUdpEndpointRuntimePanel = true;
+    public bool showQuestUdpEndpointRuntimePanelOnStart = true;
 
     private void Awake()
     {
@@ -90,6 +103,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         }
 
         runtimeOwner = this;
+        ConfigureQuestBackgroundExecution();
         if (hasConfiguredRuntime)
         {
             return;
@@ -110,6 +124,7 @@ public class Ur5ControlBootstrap : MonoBehaviour
         {
             DisableLocalTeleopWritersForQuestUdpBridge();
             ConfigureQuestUdpShadowTelemetry();
+            ConfigureRtdeJointStateFeedback();
             ConfigureSpectatorCamera();
             ConfigureControllerVisualizer();
             ConfigureRecorder(null, null, null, null);
@@ -159,6 +174,21 @@ public class Ur5ControlBootstrap : MonoBehaviour
         ConfigureSpectatorCamera();
         ConfigureControllerVisualizer();
         ConfigureRecorder(jointController, trajectoryPlayer, follower, graspAssist);
+    }
+
+    private void ConfigureQuestBackgroundExecution()
+    {
+        if (!keepQuestControlRunningWhenHeadsetRemoved)
+        {
+            return;
+        }
+
+        // Quest 的 FocusAware manifest 配置允许应用在头显失去焦点后继续运行；
+        // 这里再明确保持 Unity 主循环和 Android 屏幕唤醒，避免 UDP 控制链路被休眠打断。
+        Application.runInBackground = true;
+#if UNITY_ANDROID && !UNITY_EDITOR
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
+#endif
     }
 
     private void ConfigurePhysicsStabilizer()
@@ -643,7 +673,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
     private bool ShouldSendQuestPackets()
     {
         return enableQuestUdpShadowTelemetry
-            || !string.IsNullOrWhiteSpace(questShadowReceiverHost);
+            || !string.IsNullOrWhiteSpace(questShadowReceiverHost)
+            || Quest3UdpEndpointRuntimePanel.HasSavedReceiverHost();
     }
 
     private bool ShouldUseQuestUdpTelemetryOnlyMode()
@@ -692,7 +723,8 @@ public class Ur5ControlBootstrap : MonoBehaviour
     private void ConfigureQuestUdpShadowTelemetry()
     {
         Quest3UdpTeleopSender sender = GetComponent<Quest3UdpTeleopSender>();
-        if (!ShouldSendQuestPackets())
+        bool shouldSendPackets = ShouldSendQuestPackets();
+        if (!shouldSendPackets && !enableQuestUdpEndpointRuntimePanel)
         {
             if (sender != null)
             {
@@ -707,11 +739,66 @@ public class Ur5ControlBootstrap : MonoBehaviour
             sender = gameObject.AddComponent<Quest3UdpTeleopSender>();
         }
 
-        sender.receiverHost = questShadowReceiverHost;
-        sender.receiverPort = questShadowReceiverPort;
+        sender.receiverHost = Quest3UdpEndpointRuntimePanel.ResolveInitialHost(questShadowReceiverHost);
+        sender.receiverPort = Quest3UdpEndpointRuntimePanel.ResolveInitialPort(questShadowReceiverPort);
         sender.sendRateHz = questShadowSendRateHz;
         // 此处仅打开 Quest -> PC 遥测，不关联 Ur5UrScriptSpeedlClient。
-        sender.sendPackets = true;
+        sender.sendPackets = shouldSendPackets;
+
+        ConfigureQuestUdpEndpointRuntimePanel(sender);
+    }
+
+    private void ConfigureRtdeJointStateFeedback()
+    {
+        if (!enableRtdeJointStateFeedback || robotRoot == null)
+        {
+            return;
+        }
+
+        Ur5ArticulationJointController controller = ResolveJointController();
+        ConfigureGripperController();
+        Ur5RtdeJointStateReceiver receiver = robotRoot.GetComponent<Ur5RtdeJointStateReceiver>();
+        if (receiver == null)
+        {
+            receiver = robotRoot.gameObject.AddComponent<Ur5RtdeJointStateReceiver>();
+        }
+
+        receiver.enabled = true;
+        receiver.jointController = controller;
+        receiver.gripperController = robotRoot.GetComponent<Quest3RobotiqGripperController>();
+        if (receiver.gripperController != null)
+        {
+            // Keep ownership explicit even when the receiver already exists
+            // and its Awake ran before bootstrap reconfigured the gripper.
+            receiver.gripperController.useTrigger = false;
+        }
+        receiver.commandSender = GetComponent<Quest3UdpTeleopSender>();
+        receiver.listenPort = Mathf.Clamp(rtdeJointStateFeedbackPort, 1, 65535);
+        receiver.hideRobotUntilFirstFeedback = hideRobotUntilRtdeFeedback;
+        receiver.disableUnityLocalMotionWriters = true;
+    }
+
+    private void ConfigureQuestUdpEndpointRuntimePanel(Quest3UdpTeleopSender sender)
+    {
+        Quest3UdpEndpointRuntimePanel panel = GetComponent<Quest3UdpEndpointRuntimePanel>();
+        if (!enableQuestUdpEndpointRuntimePanel)
+        {
+            if (panel != null)
+            {
+                panel.enabled = false;
+            }
+
+            return;
+        }
+
+        if (panel == null)
+        {
+            panel = gameObject.AddComponent<Quest3UdpEndpointRuntimePanel>();
+        }
+
+        panel.enabled = true;
+        panel.showOnStart = showQuestUdpEndpointRuntimePanelOnStart;
+        panel.Configure(sender, questShadowReceiverHost, questShadowReceiverPort, questShadowSendRateHz);
     }
 
     private void ConfigureGripperController()

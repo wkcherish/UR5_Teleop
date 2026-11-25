@@ -5,7 +5,7 @@ using UnityEngine;
 using UnityEngine.XR;
 
 /// <summary>
-/// 将 Quest 右手控制器的原始 OpenXR 位姿发送到采集电脑。
+/// 将 Quest 右手控制器的原始 OpenXR 位姿发送到独立控制程序。
 /// 
 /// 该组件只发送 UDP 遥测数据，不会创建 URScript 连接，也不会控制 UR5 或夹爪。
 /// 真实机器人动作必须由 PC 端完成坐标映射、RTDE 状态校验和安全过滤后才可执行。
@@ -47,6 +47,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     private class QuestPacketPayload
     {
         public int protocol_version = 2;
+        public string session_id;
         public long sequence_id;
         public long source_timestamp_ns;
         public string source_timestamp_clock;
@@ -59,10 +60,10 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         public bool heartbeat;
     }
 
-    [Header("Quest To PC Shadow Telemetry")]
+    [Header("Quest To Standalone Control Host")]
     [Tooltip("Default is off. Enabling this sends only controller telemetry to the PC; it never enables real-robot output.")]
     public bool sendPackets;
-    [Tooltip("IP address of the DG-VLA capture computer running shadow_teleop_ur5_quest3.py.")]
+    [Tooltip("IP address of the computer running python -m quest_ur5 from this repository.")]
     public string receiverHost = "";
     public int receiverPort = 8080;
     public float sendRateHz = 72.0f;
@@ -86,6 +87,12 @@ public class Quest3UdpTeleopSender : MonoBehaviour
     private bool hasLoggedMissingDevice;
     private bool hasLoggedInvalidEndpoint;
     private bool clutchLatched;
+    private readonly string sessionId = Guid.NewGuid().ToString("N");
+    private bool applicationPaused;
+    private bool applicationFocused = true;
+
+    // The endpoint panel owns this gate while the user edits connection settings.
+    public bool InputBlocked { get; set; }
 
     public bool IsSending => sendPackets && udpClient != null && controllerDevice.isValid;
     public long LastSentSequence { get; private set; } = -1;
@@ -122,11 +129,9 @@ public class Quest3UdpTeleopSender : MonoBehaviour
                 hasLoggedMissingDevice = true;
                 Debug.LogWarning("Quest UDP telemetry is waiting for the configured controller.");
             }
-
-            return;
         }
 
-        hasLoggedMissingDevice = false;
+        hasLoggedMissingDevice = !controllerDevice.isValid;
         if (Time.unscaledTime < nextSendTime)
         {
             return;
@@ -149,21 +154,38 @@ public class Quest3UdpTeleopSender : MonoBehaviour
 
     private void TrySendLatestControllerPacket()
     {
-        if (!controllerDevice.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 position)
-            || !controllerDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rotation))
-        {
-            return;
-        }
-
+        bool hasPosition = controllerDevice.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 position);
+        bool hasRotation = controllerDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion rotation);
+        bool hasPrimary = controllerDevice.TryGetFeatureValue(CommonUsages.primaryButton, out bool primaryPressed);
+        bool hasSecondary = controllerDevice.TryGetFeatureValue(CommonUsages.secondaryButton, out bool secondaryPressed);
+        bool hasTrigger = controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float trigger);
+        bool hasGrip = controllerDevice.TryGetFeatureValue(CommonUsages.grip, out float unusedGrip)
+            || controllerDevice.TryGetFeatureValue(CommonUsages.gripButton, out bool unusedGripButton);
+        bool tracked = controllerDevice.TryGetFeatureValue(CommonUsages.isTracked, out bool isTracked) && isTracked;
+        bool hasTrackingState = controllerDevice.TryGetFeatureValue(CommonUsages.trackingState, out InputTrackingState trackingState);
+        InputDevice headset = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+        bool headsetPresent = !headset.TryGetFeatureValue(CommonUsages.userPresence, out bool userPresent) || userPresent;
+        InputTrackingState required = InputTrackingState.Position | InputTrackingState.Rotation;
+        bool trackingValid = tracked && hasTrackingState && (trackingState & required) == required
+            && !applicationPaused && applicationFocused && headsetPresent;
+        bool buttonsValid = hasPrimary && hasSecondary && hasTrigger && hasGrip;
         bool clutch = ReadClutch(out float gripAmount);
-        bool primaryPressed = ReadButton(CommonUsages.primaryButton);
-        bool secondaryPressed = ReadButton(CommonUsages.secondaryButton);
+        if (!hasPosition || !hasRotation || !trackingValid || !buttonsValid || InputBlocked)
+        {
+            clutch = false;
+            clutchLatched = false;
+        }
+        if (!hasRotation)
+        {
+            rotation = Quaternion.identity;
+        }
         string mode = ResolveMode(clutch, primaryPressed, secondaryPressed);
 
         // 故意不经过 XR Origin：PC 端需要的是 Quest tracking frame 的原始数据，
         // 再以 clutch 相对位姿方式映射到 UR5 base frame。
         QuestPacketPayload packet = new QuestPacketPayload
         {
+            session_id = sessionId,
             sequence_id = nextSequence,
             source_timestamp_ns = GetQuestMonotonicTimestampNanoseconds(),
             source_timestamp_clock = "quest_realtime_since_startup",
@@ -172,9 +194,9 @@ public class Quest3UdpTeleopSender : MonoBehaviour
             mode = mode,
             valid = new ValidPayload
             {
-                controller_pose = true,
-                buttons = true,
-                tracking = controllerDevice.isValid
+                controller_pose = hasPosition && hasRotation,
+                buttons = buttonsValid && !InputBlocked,
+                tracking = trackingValid
             },
             controller = new ControllerPayload
             {
@@ -186,7 +208,7 @@ public class Quest3UdpTeleopSender : MonoBehaviour
             {
                 clutch = clutch,
                 grip = gripAmount,
-                trigger = ReadTrigger(),
+                trigger = Mathf.Clamp01(trigger),
                 primary = primaryPressed,
                 secondary = secondaryPressed,
                 rotation_adjust = mode == "default_grasp",
@@ -203,6 +225,16 @@ public class Quest3UdpTeleopSender : MonoBehaviour
             byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(packet));
             udpClient.Send(payload, payload.Length, receiverHost.Trim(), receiverPort);
             LastSentSequence = nextSequence;
+            if (logStatus && (nextSequence == 0 || nextSequence % 300 == 0))
+            {
+                Debug.Log("Quest UDP telemetry sent seq "
+                    + nextSequence
+                    + " to "
+                    + receiverHost.Trim()
+                    + ":"
+                    + receiverPort);
+            }
+
             nextSequence++;
         }
         catch (Exception exception)
@@ -231,8 +263,8 @@ public class Quest3UdpTeleopSender : MonoBehaviour
 
         if (!useGripAsClutch)
         {
-            clutchLatched = true;
-            return true;
+            clutchLatched = false;
+            return false;
         }
 
         if (hasAnalogGrip)
@@ -249,16 +281,16 @@ public class Quest3UdpTeleopSender : MonoBehaviour
         return clutchLatched;
     }
 
-    private float ReadTrigger()
+    private void OnApplicationPause(bool paused)
     {
-        return controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out float trigger)
-            ? Mathf.Clamp01(trigger)
-            : 0.0f;
+        applicationPaused = paused;
+        clutchLatched = false;
     }
 
-    private bool ReadButton(InputFeatureUsage<bool> usage)
+    private void OnApplicationFocus(bool focused)
     {
-        return controllerDevice.TryGetFeatureValue(usage, out bool pressed) && pressed;
+        applicationFocused = focused;
+        clutchLatched = false;
     }
 
     private static string ResolveMode(bool clutch, bool primaryPressed, bool secondaryPressed)
